@@ -14,7 +14,7 @@ interface Navigator {
 
 <script setup lang="ts">
 import 'xterm/css/xterm.css';
-import {onMounted, reactive, ref, watch} from "vue";
+import {onBeforeMount, onMounted, reactive, ref, watch} from "vue";
 import {ESPLoader, type FlashOptions, type IEspLoaderTerminal, type LoaderOptions, Transport} from "./lib_esptools-js";
 import CryptoJS from "crypto-js";
 import {useData} from 'vitepress';
@@ -43,13 +43,18 @@ const terminalConfig = {
 
 const notSupportedMsg = "您的浏览器不支持虚拟串口，请使用电脑版Chrome或者Edge。"
 
-onMounted(async () => {
+onBeforeMount(() => {
   if (!('serial' in navigator)) {
     alert(notSupportedMsg);
     console.log("Serial not supported");
   } else {
     console.log("serial ok");
     serialSupported.value = true;
+  }
+});
+
+onMounted(async () => {
+  if ('serial' in navigator) {
     const { Terminal } = await import('xterm');
     const { FitAddon } = await import('xterm-addon-fit');
     fitAddon = new FitAddon();
@@ -87,8 +92,8 @@ const serialSupported = ref(false);
 
 const imageOption = [
   {
-    value: 'wireless_tools_v0.3.0_esp32c3.bin',
-    link: '/downloads/wireless_proxy_v0.3.0_esp32c3.bin'
+    value: '无线DAP-LINK_v0.3.1_esp32c3.bin',
+    link: '/downloads/wireless_proxy_v0.3.1_esp32c3.bin'
   },
 ]
 const imageSelect = ref(imageOption[0]);
@@ -386,8 +391,12 @@ const customColors = [
     <h1>在线ESP32烧录<span v-if="serialSupported">（免环境配置，免装软件）</span></h1>
     <el-divider></el-divider>
     <div v-show="serialSupported">
+      <el-alert type="info" class="mb-4"  show-icon>
+        若无法连接，请先让ESP32进入下载模式，再尝试连接（按住BOOT，按一下RESET，松开BOOT）
+      </el-alert>
       <el-form label-width="auto">
         <el-form-item label="固件">
+          <client-only>
           <el-select
               v-model="imageSelect"
               placeholder="选择固件"
@@ -399,8 +408,10 @@ const customColors = [
                 :value="item"
             />
           </el-select>
+          </client-only>
         </el-form-item>
         <el-form-item label="波特率">
+          <client-only>
           <el-select
               v-model="programBaud"
               placeholder="选择波特率"
@@ -412,6 +423,7 @@ const customColors = [
                 :value="item.value"
             />
           </el-select>
+          </client-only>
         </el-form-item>
         <el-form-item label="操作">
           <el-button v-if="!isConnected" @click="programConnect" type="primary">连接</el-button>
