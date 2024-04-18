@@ -88,7 +88,7 @@ const programBaudOption = [
 ]
 
 const connectedBaud = ref("")
-const isConnected = ref(false)
+const programConnected = ref(false)
 const serialSupported = ref(false);
 
 const imageOption = [
@@ -141,7 +141,7 @@ async function programConnect() {
 
     chip.value = await esploader.main();
     connectedBaud.value = programBaud.value;
-    isConnected.value = true;
+    programConnected.value = true;
 
     chip_type.value = esploader.chip.CHIP_NAME;
 
@@ -349,7 +349,7 @@ async function programDisconnect() {
     await transport.waitForUnlock(1500);
   }
 
-  isConnected.value = false;
+  programConnected.value = false;
   chip.value = "";
   chip_type.value = "";
   connectedBaud.value = "";
@@ -365,6 +365,7 @@ async function resetClick() {
   }
 }
 
+/* used for file upload */
 async function handleFileChange(e: Event) {
   const target = e.target as HTMLInputElement
   const files = target.files
@@ -399,6 +400,65 @@ const customColors = [
   { color: '#019d30', percentage: 100 },
 ]
 
+/* CONSOLE */
+const consoleStarted = ref(false);
+
+const consoleBaud = ref("115200");
+const consoleBaudOption = [
+  {text: '115200', value: '115200'},
+  {text: '230400', value: '230400'},
+  {text: '460800', value: '460800'},
+  {text: '921600', value: '921600'},
+]
+const consoleBaudConnected = ref("");
+
+async function consoleStartButton() {
+  if (chip.value === "") {
+    let port = await navigator.serial.requestPort({});
+    transport = new Transport(port, true);
+  } else {
+    return;
+  }
+
+  if (!transport) {
+    return;
+  }
+
+  terminal.reset();
+
+  consoleBaudConnected.value = consoleBaud.value;
+  await transport.connect(parseInt(consoleBaudConnected.value));
+  consoleStarted.value = true;
+
+  while (consoleStarted.value) {
+    const val = await transport.rawRead();
+    if (typeof val !== "undefined") {
+      terminal.write(val);
+    } else {
+      break;
+    }
+  }
+  console.log("quitting console");
+}
+
+async function consoleStopButton() {
+  consoleStarted.value = false;
+  if (transport) {
+    await transport.disconnect();
+    await transport.waitForUnlock(1500);
+  }
+  terminal.reset();
+  cleanUp();
+}
+
+async function reset() {
+  if (transport) {
+    await transport.setDTR(false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await transport.setDTR(true);
+  }
+}
+
 </script>
 
 <template>
@@ -406,80 +466,111 @@ const customColors = [
     <h1>在线ESP32烧录<span v-if="serialSupported">（免环境配置，免装软件）</span></h1>
     <el-divider></el-divider>
     <div v-show="serialSupported">
-      <el-alert type="info" class="mb-4"  show-icon>
-        若无法连接，请先让ESP32进入下载模式，再尝试连接（按住BOOT，按一下RESET，松开BOOT）
-      </el-alert>
-      <el-form label-width="auto">
-        <el-form-item label="固件">
-          <client-only>
-          <el-select
-              v-model="imageSelect"
-              placeholder="选择固件"
-          >
-            <el-option
-                v-for="item in imageOption"
-                :key="item.value"
-                :label="item.value"
-                :value="item"
-            />
-          </el-select>
-          </client-only>
-        </el-form-item>
-        <el-form-item label="波特率">
-          <client-only>
-          <el-select
-              v-model="programBaud"
-              placeholder="选择波特率"
-          >
-            <el-option
-                v-for="item in programBaudOption"
-                :key="item.value"
-                :label="item.value"
-                :value="item.value"
-            />
-          </el-select>
-          </client-only>
-        </el-form-item>
-        <el-form-item label="操作">
-          <el-button v-if="!isConnected" @click="programConnect" type="primary">连接</el-button>
-          <el-button v-show="isConnected" @click="programFlash" type="primary">烧录</el-button>
-          <el-button v-show="isConnected" @click="programErase" type="danger">全片擦除</el-button>
-          <el-button v-show="isConnected" @click="programDisconnect" type="info">断开连接</el-button>
-        </el-form-item>
-        <el-form-item label="已连接" v-show="isConnected">
-          <div class="flex gap-2">
-            <el-tag type="primary">芯片型号 {{ chip }}</el-tag>
-            <el-tag type="success">波特率 {{ connectedBaud }}</el-tag>
-<!--            <el-tag type="info">Tag 3</el-tag>-->
-<!--            <el-tag type="warning">Tag 4</el-tag>-->
-<!--            <el-tag type="danger">Tag 5</el-tag>-->
-          </div>
-        </el-form-item>
-        <el-form-item label="状态" class="border" v-if="binaryLoadStatus.status">
-          <div class="flex flex-row w-full">
-            <el-text class="w-32">{{ binaryLoadStatus.status }}</el-text>
-            <el-progress :percentage="binaryLoadStatus.progress" :color="customColors" class="w-full"/>
-          </div>
-        </el-form-item>
-      </el-form>
+      <el-tabs>
+        <el-tab-pane label="烧录" :disabled="consoleStarted">
+          <el-alert type="info" class="mb-4"  show-icon>
+            若无法连接，请先让ESP32进入下载模式，再尝试连接（按住BOOT，按一下RESET，松开BOOT）
+          </el-alert>
+          <el-form label-width="auto">
+            <el-form-item label="固件">
+              <client-only>
+                <el-select
+                    v-model="imageSelect"
+                    placeholder="选择固件"
+                >
+                  <el-option
+                      v-for="item in imageOption"
+                      :key="item.value"
+                      :label="item.value"
+                      :value="item"
+                  />
+                </el-select>
+              </client-only>
+            </el-form-item>
+            <el-form-item label="波特率">
+              <client-only>
+                <el-select
+                    v-model="programBaud"
+                    placeholder="选择波特率"
+                >
+                  <el-option
+                      v-for="item in programBaudOption"
+                      :key="item.value"
+                      :label="item.value"
+                      :value="item.value"
+                  />
+                </el-select>
+              </client-only>
+            </el-form-item>
+            <el-form-item label="操作">
+              <el-button v-if="!programConnected" @click="programConnect" type="primary">连接</el-button>
+              <el-button v-show="programConnected" @click="programFlash" type="primary">烧录</el-button>
+              <el-button v-show="programConnected" @click="programErase" type="danger">全片擦除</el-button>
+              <el-button v-show="programConnected" @click="programDisconnect" type="info">断开连接</el-button>
+            </el-form-item>
+            <el-form-item label="已连接" v-show="programConnected">
+              <div class="flex gap-2">
+                <el-tag type="primary">芯片型号 {{ chip }}</el-tag>
+                <el-tag type="success">波特率 {{ connectedBaud }}</el-tag>
+                <!--            <el-tag type="info">Tag 3</el-tag>-->
+                <!--            <el-tag type="warning">Tag 4</el-tag>-->
+                <!--            <el-tag type="danger">Tag 5</el-tag>-->
+              </div>
+            </el-form-item>
+            <el-form-item label="状态" class="border" v-if="binaryLoadStatus.status">
+              <div class="flex flex-row w-full">
+                <el-text class="w-32">{{ binaryLoadStatus.status }}</el-text>
+                <el-progress :percentage="binaryLoadStatus.progress" :color="customColors" class="w-full"/>
+              </div>
+            </el-form-item>
+          </el-form>
+        </el-tab-pane>
+
+        <el-tab-pane label="查看日志" :disabled="programConnected">
+          <el-form label-width="auto">
+            <el-form-item label="波特率">
+              <client-only>
+                <el-select
+                    v-model="consoleBaud"
+                    placeholder="选择波特率"
+                >
+                  <el-option
+                      v-for="item in consoleBaudOption"
+                      :key="item.value"
+                      :label="item.value"
+                      :value="item.value"
+                  />
+                </el-select>
+              </client-only>
+            </el-form-item>
+            <el-form-item label="操作">
+              <el-button v-if="!consoleStarted" @click="consoleStartButton" type="primary">连接</el-button>
+              <el-button v-show="consoleStarted" @click="reset" type="info">重启</el-button>
+              <el-button v-show="consoleStarted" @click="consoleStopButton" type="danger">断开连接</el-button>
+            </el-form-item>
+            <el-form-item label="状态" v-show="consoleStarted">
+              <div class="flex gap-2">
+                <el-tag type="success">已连接</el-tag>
+                <el-tag type="primary">波特率 {{ consoleBaudConnected }}</el-tag>
+              </div>
+            </el-form-item>
+          </el-form>
+        </el-tab-pane>
+      </el-tabs>
+
       <!--    <input type="file" @change="handleFileChange"/>-->
 
-      <!--  <div>-->
-      <!--    <h1>Console</h1>-->
-      <!--    <p>Connected to device: {{chip}}</p>-->
-      <!--    <button @click="consoleConnectBtn">stop</button>-->
-      <!--    <button @click="consoleResetBtn">reset</button>-->
-      <!--  </div>-->
       <div>
         <div id="terminal-container" ref="terminalContainer" class="terminal"></div>
       </div>
     </div>
-    <div v-show="!serialSupported">
+    <div v-if="!serialSupported">
       <div class="text-center">
         <a href="/"><el-button type="primary">返回至首页</el-button></a>
       </div>
       <h2>{{notSupportedMsg}}</h2>
     </div>
+
   </div>
 </template>
 
