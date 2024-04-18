@@ -78,6 +78,7 @@ onMounted(async () => {
 });
 
 const chip = ref("");
+const chip_type = ref("");
 const programBaud = ref("115200");
 const programBaudOption = [
   {text: '115200', value: '115200'},
@@ -93,7 +94,12 @@ const serialSupported = ref(false);
 const imageOption = [
   {
     value: '无线DAP-LINK_v0.3.1_esp32c3.bin',
-    link: '/downloads/wireless_proxy_v0.3.1_esp32c3.bin'
+    link: '/downloads/wireless_proxy_v0.3.1_esp32c3.bin',
+    target: 'ESP32-C3',
+  }, {
+    value: '无线DAP-LINK_v0.3.1_esp32.bin',
+    link: '/downloads/wireless_proxy_v0.3.1_esp32.bin',
+    target: 'ESP32',
   },
 ]
 const imageSelect = ref(imageOption[0]);
@@ -137,6 +143,8 @@ async function programConnect() {
     connectedBaud.value = programBaud.value;
     isConnected.value = true;
 
+    chip_type.value = esploader.chip.CHIP_NAME;
+
     // Temporarily broken
     // await esploader.flashId();
   } catch (error) {
@@ -157,6 +165,7 @@ async function programConnect() {
 function cleanUp() {
   transport = null;
   chip.value = "";
+  chip_type.value = "";
 }
 
 // async function consoleConnectBtn() {
@@ -274,6 +283,11 @@ async function loadBinaryFile(imageLink: string) {
 async function programFlash() {
   const fileArray: IBinImage[] = [];
 
+  if (chip_type.value != imageSelect.value.target) {
+    alert(`烧录对象（${chip_type.value}）与固件（${imageSelect.value.value}）不匹配！`)
+    return;
+  }
+
   const blob = await loadBinaryFile(imageSelect.value.link);
 
   console.log(blob);
@@ -337,6 +351,7 @@ async function programDisconnect() {
 
   isConnected.value = false;
   chip.value = "";
+  chip_type.value = "";
   connectedBaud.value = "";
   binaryLoadStatus.status = "未连接";
   terminal.reset();
