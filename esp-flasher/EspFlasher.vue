@@ -91,18 +91,17 @@ const connectedBaud = ref("")
 const programConnected = ref(false)
 const serialSupported = ref(false);
 
-const imageOption = [
-  {
-    value: '无线DAP-LINK_v0.3.1_esp32c3.bin',
-    link: '/downloads/wireless_proxy_v0.3.1_esp32c3.bin',
-    target: 'ESP32-C3',
-  }, {
-    value: '无线DAP-LINK_v0.3.1_esp32.bin',
-    link: '/downloads/wireless_proxy_v0.3.1_esp32.bin',
-    target: 'ESP32',
-  },
-]
-const imageSelect = ref(imageOption[0]);
+type ImageOption = {
+  value: string;
+  link: string;
+  target: string;
+};
+
+const props = defineProps<{
+  imageOptions: ImageOption[];
+}>();
+
+const imageSelect = ref(props.imageOptions[0]);
 
 let transport: Transport | null;
 
@@ -463,8 +462,6 @@ async function reset() {
 
 <template>
   <div>
-    <h1>在线ESP32烧录<span v-if="serialSupported">（免环境配置，免装软件）</span></h1>
-    <el-divider></el-divider>
     <div v-show="serialSupported">
       <el-tabs>
         <el-tab-pane label="烧录" :disabled="consoleStarted">
@@ -479,7 +476,7 @@ async function reset() {
                     placeholder="选择固件"
                 >
                   <el-option
-                      v-for="item in imageOption"
+                      v-for="item in imageOptions"
                       :key="item.value"
                       :label="item.value"
                       :value="item"
