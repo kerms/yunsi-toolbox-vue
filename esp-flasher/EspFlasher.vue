@@ -463,6 +463,9 @@ async function reset() {
 <template>
   <div>
     <div v-show="serialSupported">
+      <el-alert type="info" class="mb-4"  show-icon>
+        烧录 和 日志 是独立的功能，连接中无法切换功能
+      </el-alert>
       <el-tabs>
         <el-tab-pane label="烧录" :disabled="consoleStarted">
           <el-alert type="info" class="mb-4"  show-icon>
@@ -504,6 +507,9 @@ async function reset() {
               <el-button v-show="programConnected" @click="programFlash" type="primary">烧录</el-button>
               <el-button v-show="programConnected" @click="programErase" type="danger">全片擦除</el-button>
               <el-button v-show="programConnected" @click="programDisconnect" type="info">断开连接</el-button>
+              <el-link :href="imageSelect.link" :underline="false" class="ml-2">
+                <el-button type="primary">保存固件到本地</el-button>
+              </el-link>
             </el-form-item>
             <el-form-item label="已连接" v-show="programConnected">
               <div class="flex gap-2">
