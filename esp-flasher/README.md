@@ -2,6 +2,12 @@
 
 A Vue 3 component for flashing ESP32 series microcontrollers directly from the browser using the Web Serial API. This component is based on `esptools-js`.
 
+## Demo
+
+[Live Demo - Wireless UART DIY Guide](https://yunsi.studio/wireless-debugger/docs/diy/uart/)
+
+![ESP Flasher Screenshot](./assets/screenshot.png)
+
 ## Features
 
 - Supports ESP32, ESP32-C3, ESP32-S3, and more.
