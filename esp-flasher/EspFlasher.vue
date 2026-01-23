@@ -17,16 +17,10 @@ import 'xterm/css/xterm.css';
 import {onBeforeMount, onMounted, reactive, ref, watch} from "vue";
 import {ESPLoader, type FlashOptions, type IEspLoaderTerminal, type LoaderOptions, Transport} from "./lib_esptools-js";
 import CryptoJS from "crypto-js";
-import {useData} from 'vitepress';
 
 const terminalContainer = ref();
 let terminal: any;
 let fitAddon: any;
-const isDarkMode = useData().isDark;
-
-watch(isDarkMode, value => {
-  
-});
 
 const terminalConfig = {
   theme: {
@@ -99,7 +93,12 @@ type ImageOption = {
 
 const props = defineProps<{
   imageOptions: ImageOption[];
+  isDark?: boolean;
 }>();
+
+watch(() => props.isDark, (value) => {
+  // Handle dark mode change if needed for xterm
+});
 
 const imageSelect = ref(props.imageOptions[0]);
 

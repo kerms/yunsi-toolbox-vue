@@ -7,7 +7,7 @@ A Vue 3 component for flashing ESP32 series microcontrollers directly from the b
 - Supports ESP32, ESP32-C3, ESP32-S3, and more.
 - Built-in Xterm.js terminal for progress and logging.
 - Support for multiple firmware image options.
-- Dark mode support (compatible with VitePress).
+- Dark mode support via prop.
 
 ## Usage
 
@@ -16,6 +16,7 @@ A Vue 3 component for flashing ESP32 series microcontrollers directly from the b
 | Prop | Type | Description |
 | :--- | :--- | :--- |
 | `imageOptions` | `ImageOption[]` | An array of firmware images available for flashing. |
+| `isDark` | `boolean` | (Optional) Toggle dark mode for the terminal. |
 
 #### ImageOption Object
 
@@ -32,6 +33,9 @@ type ImageOption = {
 ```vue
 <script setup lang="ts">
 import EspFlasher from './path/to/yunsi-toolbox/esp-flasher/EspFlasher.vue';
+import { ref } from 'vue';
+
+const isDark = ref(false);
 
 const imageOptions = [
   {
@@ -48,7 +52,7 @@ const imageOptions = [
 </script>
 
 <template>
-  <EspFlasher :imageOptions="imageOptions" />
+  <EspFlasher :imageOptions="imageOptions" :isDark="isDark" />
 </template>
 ```
 
@@ -58,7 +62,6 @@ const imageOptions = [
 - `xterm`
 - `xterm-addon-fit`
 - `crypto-js`
-- `vitepress` (for `useData` dark mode toggle)
 
 ## Credits
 
