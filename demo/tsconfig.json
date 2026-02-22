@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true, // required: @vueuse/core (Bluetooth API types) and element-plus (JSX namespace, __VLS_Slots, icons-vue) have .d.ts incompatible with TS 5.4+. All 8 suppressed errors are inside node_modules; project source is fully clean. Remove only after upgrading those packages.
+    "jsx": "preserve",
+    "lib": ["ESNext", "DOM"],
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@yunsi/*": ["../*"]
+    }
+  },
+  "include": ["src/**/*", "../lib/**/*", "../components/**/*"]
+}

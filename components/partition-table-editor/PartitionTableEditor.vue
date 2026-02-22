@@ -225,7 +225,7 @@ function handleExportBinary() {
   }
   try {
     const data = serializeBinary(table.value);
-    downloadBlob(new Blob([data]), 'partitions.bin');
+    downloadBlob(new Blob([data as Uint8Array<ArrayBuffer>]), 'partitions.bin');
     showStatus('已导出 partitions.bin', 'success');
   } catch (e: any) {
     showStatus(`导出失败: ${e.message}`, 'error');

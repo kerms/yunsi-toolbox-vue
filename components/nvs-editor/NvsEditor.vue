@@ -273,7 +273,7 @@ function handleExportBinary() {
       return;
     }
     const data = serializeBinary(partition.value, targetSize.value);
-    downloadBlob(new Blob([data]), 'nvs.bin');
+    downloadBlob(new Blob([data as Uint8Array<ArrayBuffer>]), 'nvs.bin');
     showStatus('已导出 nvs.bin', 'success');
   } catch (e: any) {
     showStatus(`导出失败: ${e.message}`, 'error');

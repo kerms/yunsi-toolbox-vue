@@ -1,20 +1,6 @@
-<script lang="ts">
-
-interface Navigator {
-  serial: {
-    // Define the methods and properties you need from the Web Serial API
-    // For example:
-    requestPort: (options?: SerialPortRequestOptions) => Promise<SerialPort>;
-    getPorts: () => Promise<SerialPort[]>;
-    // Add other properties and methods as needed
-  };
-}
-
-</script>
-
 <script setup lang="ts">
 import 'xterm/css/xterm.css';
-import {onBeforeMount, onMounted, reactive, ref, watch} from "vue";
+import {computed, onBeforeMount, onMounted, reactive, ref, watch, type PropType} from "vue";
 import {ESPLoader, type FlashOptions, type IEspLoaderTerminal, type LoaderOptions, Transport} from "./lib_esptools-js";
 import CryptoJS from "crypto-js";
 
@@ -22,18 +8,89 @@ const terminalContainer = ref();
 let terminal: any;
 let fitAddon: any;
 
-const terminalConfig = {
-  theme: {
-    background: '#4b4b4b', // dark gray background
-    foreground: '#c5c8c6', // light gray text
-    cursor: '#f0c674',     // yellow cursor
-    // You can also set specific ANSI colors if needed
-    black: '#1d1f21',
-    red: '#cc6666',
-    convertEol: true,
-    // ...and so on for other colors
-  }
+const terminalDarkTheme = {
+  background: '#4b4b4b',
+  foreground: '#c5c8c6',
+  cursor: '#f0c674',
+  black: '#1d1f21',
+  red: '#cc6666',
 }
+
+const terminalLightTheme = {
+  background: '#f5f5f5',
+  foreground: '#333333',
+  cursor: '#555555',
+}
+
+// ── Props ─────────────────────────────────────────────────────────
+
+/** `value` is the unique selection key — enforced by the prop validator. */
+type ImageOption = {
+  value: string;
+  link: string;
+  target: string;
+};
+
+const props = defineProps({
+  imageOptions: {
+    type: Array as PropType<ImageOption[]>,
+    required: true as const,
+    validator(opts: ImageOption[]) {
+      const values = opts.map(o => o.value);
+      const hasDupes = values.length !== new Set(values).size;
+      if (hasDupes) {
+        console.warn(
+          '[EspFlasher] imageOptions contains duplicate .value keys — ' +
+          'each option must have a unique value. Selection behaviour is undefined.'
+        );
+      }
+      return !hasDupes;
+    },
+  },
+  isDark: Boolean,
+});
+
+// ── State ──────────────────────────────────────────────────────────
+
+const chip = ref("");
+const chip_type = ref("");
+const programBaud = ref("115200");
+const programBaudOption = [
+  {text: '115200', value: '115200'},
+  {text: '230400', value: '230400'},
+  {text: '460800', value: '460800'},
+  {text: '921600', value: '921600'},
+]
+
+const connectedBaud = ref("")
+const programConnected = ref(false)
+const serialSupported = ref(false);
+
+// selectedValue: stable string key that survives array replacements.
+// imageSelect: writable computed — getter always returns the live object from
+// the current props.imageOptions; no deep watcher or manual reconciliation needed.
+// el-select matches options by valueKey="value" (string), not by reference,
+// so a fresh object reference from the getter is fine.
+const selectedValue = ref<string | null>(props.imageOptions[0]?.value ?? null);
+
+const imageSelect = computed<ImageOption | null>({
+  get() {
+    const opts = props.imageOptions;
+    if (opts.length === 0) return null;
+    return opts.find(o => o.value === selectedValue.value) ?? opts[0];
+  },
+  set(opt: ImageOption | null) {
+    selectedValue.value = opt?.value ?? null;
+  },
+});
+
+watch(() => props.isDark, (val) => {
+  if (terminal) {
+    terminal.options.theme = val ? terminalDarkTheme : terminalLightTheme;
+  }
+});
+
+// ── Lifecycle ──────────────────────────────────────────────────────
 
 const notSupportedMsg = "您的浏览器不支持虚拟串口，请使用电脑版Chrome或者Edge。"
 
@@ -52,7 +109,7 @@ onMounted(async () => {
     const { Terminal } = await import('xterm');
     const { FitAddon } = await import('xterm-addon-fit');
     fitAddon = new FitAddon();
-    terminal = new Terminal(terminalConfig);
+    terminal = new Terminal({ theme: props.isDark ? terminalDarkTheme : terminalLightTheme });
     terminal.loadAddon(fitAddon);
 
     // Initialize the terminal
@@ -70,37 +127,6 @@ onMounted(async () => {
     terminalResizeObserver.observe(terminalContainer.value);
   }
 });
-
-const chip = ref("");
-const chip_type = ref("");
-const programBaud = ref("115200");
-const programBaudOption = [
-  {text: '115200', value: '115200'},
-  {text: '230400', value: '230400'},
-  {text: '460800', value: '460800'},
-  {text: '921600', value: '921600'},
-]
-
-const connectedBaud = ref("")
-const programConnected = ref(false)
-const serialSupported = ref(false);
-
-type ImageOption = {
-  value: string;
-  link: string;
-  target: string;
-};
-
-const props = defineProps<{
-  imageOptions: ImageOption[];
-  isDark?: boolean;
-}>();
-
-watch(() => props.isDark, (value) => {
-  // Handle dark mode change if needed for xterm
-});
-
-const imageSelect = ref(props.imageOptions[0]);
 
 let transport: Transport | null;
 
@@ -216,6 +242,7 @@ const binaryLoadStatus = reactive({
 });
 
 function updateProgress(loaded: number, total: number) {
+  if (!Number.isFinite(total) || total <= 0) return;
   binaryLoadStatus.progress = Math.round((loaded / total) * 100);
 }
 
@@ -233,14 +260,13 @@ async function loadBinaryFile(imageLink: string) {
     }
 
     const contentLength = response.headers.get('content-length');
-    if (!contentLength) {
-      throw new Error('Content-Length header is missing');
-    }
-
-    const total = parseInt(contentLength, 10);
+    const total = contentLength ? parseInt(contentLength, 10) : NaN;
     let loaded = 0;
 
     // Stream response body
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
     const reader = response.body.getReader();
     let chunks = []; // to store chunks of data
     let receivedLength = 0; // received that many bytes at the moment
@@ -279,6 +305,10 @@ async function loadBinaryFile(imageLink: string) {
 }
 
 async function programFlash() {
+  if (!imageSelect.value) {
+    alert('请先选择固件');
+    return;
+  }
   const fileArray: IBinImage[] = [];
 
   if (chip_type.value != imageSelect.value.target) {
@@ -368,22 +398,10 @@ async function handleFileChange(e: Event) {
   const target = e.target as HTMLInputElement
   const files = target.files
   const fileArray: IBinImage[] = [];
-
-  const blob = await loadBinaryFile(imageSelect.value.link);
-  if (blob) {
-
-    let data = arrayBufferToBinaryString(await blob.arrayBuffer());
-    console.log(blob.size, data);
-  }
-
   if (files && files.length > 0) {
     const file = files[0];
-
-    let data: string = arrayBufferToBinaryString(await file.arrayBuffer());
-    fileArray.push({
-      data: data,
-      address: 0x0,
-    })
+    const data: string = arrayBufferToBinaryString(await file.arrayBuffer());
+    fileArray.push({ data, address: 0x0 });
     console.log(file, data);
   }
 }
@@ -467,6 +485,9 @@ async function reset() {
       </el-alert>
       <el-tabs>
         <el-tab-pane label="烧录" :disabled="consoleStarted">
+          <el-alert v-if="imageOptions.length === 0" type="warning" class="mb-4" show-icon :closable="false">
+            未配置固件选项，无法烧录。
+          </el-alert>
           <el-alert type="info" class="mb-4"  show-icon>
             若无法连接，请先让ESP32进入下载模式，再尝试连接（按住BOOT，按一下RESET，松开BOOT）
           </el-alert>
@@ -506,7 +527,7 @@ async function reset() {
               <el-button v-show="programConnected" @click="programFlash" type="primary">烧录</el-button>
               <el-button v-show="programConnected" @click="programErase" type="danger">全片擦除</el-button>
               <el-button v-show="programConnected" @click="programDisconnect" type="info">断开连接</el-button>
-              <el-link :href="imageSelect.link" :underline="false" class="ml-2">
+              <el-link v-if="imageSelect" :href="imageSelect.link" :underline="false" class="ml-2">
                 <el-button type="primary">保存固件到本地</el-button>
               </el-link>
             </el-form-item>
