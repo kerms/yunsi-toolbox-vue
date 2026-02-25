@@ -1,4 +1,5 @@
-import { NvsPartition, NvsType, TYPE_TO_ENCODING, isPrimitiveType } from './types';
+import type { NvsPartition } from './types';
+import { NvsType, TYPE_TO_ENCODING, isPrimitiveType } from './types';
 
 /** Convert Uint8Array to hex string */
 function bytesToHex(data: Uint8Array): string {

@@ -1,5 +1,6 @@
 import { readU16, readU32, readNullTermString } from '../shared/binary-reader';
-import { PartitionEntry, PartitionTable, PartitionType } from './types';
+import type { PartitionEntry, PartitionTable } from './types';
+import { PartitionType } from './types';
 import { ENTRY_SIZE, ENTRY_MAGIC, MD5_MAGIC, NAME_FIELD_SIZE, MAX_ENTRIES } from './constants';
 import { md5 } from './md5';
 

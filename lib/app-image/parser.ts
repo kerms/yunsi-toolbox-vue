@@ -1,5 +1,5 @@
 import { readU8, readU16, readU32, readNullTermString } from '../shared/binary-reader';
-import {
+import type {
   AppImageInfo, ImageHeader, ExtendedHeader, SegmentHeader, AppDescription,
 } from './types';
 import {

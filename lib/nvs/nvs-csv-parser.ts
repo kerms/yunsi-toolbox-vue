@@ -1,4 +1,5 @@
-import { NvsPartition, NvsEntry, NvsType, NvsVersion, NvsEncoding, ENCODING_TO_TYPE } from './types';
+import type { NvsPartition, NvsEntry, NvsEncoding } from './types';
+import { NvsType, NvsVersion, ENCODING_TO_TYPE } from './types';
 import { generateEntryId } from './nvs-partition';
 
 /**

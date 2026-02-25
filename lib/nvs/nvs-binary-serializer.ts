@@ -1,4 +1,5 @@
-import { NvsPartition, NvsType, NvsVersion, PageState } from './types';
+import type { NvsPartition } from './types';
+import { NvsType, NvsVersion, PageState } from './types';
 import {
   PAGE_SIZE, PAGE_HEADER_SIZE, BITMAP_OFFSET, BITMAP_SIZE,
   FIRST_ENTRY_OFFSET, ENTRY_SIZE, ENTRIES_PER_PAGE,

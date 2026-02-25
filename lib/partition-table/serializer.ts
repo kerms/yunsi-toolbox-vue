@@ -1,5 +1,5 @@
 import { writeU16, writeU32, writeNullTermString } from '../shared/binary-writer';
-import { PartitionTable } from './types';
+import type { PartitionTable } from './types';
 import { ENTRY_SIZE, ENTRY_MAGIC, MD5_MAGIC, NAME_FIELD_SIZE, TABLE_MAX_SIZE } from './constants';
 import { md5 } from './md5';
 

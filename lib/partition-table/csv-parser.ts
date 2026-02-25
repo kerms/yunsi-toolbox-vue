@@ -1,4 +1,5 @@
-import { PartitionEntry, PartitionFlags, PartitionTable, PartitionType, NAME_TO_TYPE, subtypeFromName } from './types';
+import type { PartitionEntry, PartitionTable } from './types';
+import { PartitionFlags, PartitionType, NAME_TO_TYPE, subtypeFromName } from './types';
 
 const U32_MAX = 0xFFFF_FFFF;
 

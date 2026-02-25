@@ -1,4 +1,5 @@
-import { PartitionTable, TYPE_NAMES, getSubtypeName } from './types';
+import type { PartitionTable } from './types';
+import { TYPE_NAMES, getSubtypeName } from './types';
 
 /** Format a number as hex with 0x prefix */
 function toHex(val: number): string {

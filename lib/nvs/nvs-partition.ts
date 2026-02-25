@@ -1,7 +1,5 @@
-import {
-  NvsEntry, NvsPartition, NvsFlashStats, NvsType, NvsVersion,
-  isPrimitiveType,
-} from './types';
+import type { NvsEntry, NvsPartition, NvsFlashStats } from './types';
+import { NvsType, NvsVersion, isPrimitiveType } from './types';
 import { ENTRIES_PER_PAGE, ENTRY_SIZE, PAGE_SIZE, MAX_KEY_LENGTH, MAX_NAMESPACES, MAX_STRING_LENGTH, MAX_BLOB_SIZE_V1, MAX_BLOB_SIZE_V2 } from './constants';
 
 /** Generate a random unique ID for client-side entry tracking */

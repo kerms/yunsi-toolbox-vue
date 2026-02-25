@@ -1,4 +1,4 @@
-import { PartitionEntry, PartitionTable } from './types';
+import type { PartitionEntry, PartitionTable } from './types';
 
 export interface PartitionValidationError {
   type: 'overlap' | 'alignment' | 'duplicate_name';
