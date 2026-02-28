@@ -62,10 +62,10 @@ interface PlannedEntry {
  */
 export function serializeBinary(partition: NvsPartition, targetSize: number): Uint8Array {
   if (targetSize % PAGE_SIZE !== 0) {
-    throw new Error(`目标大小 (${targetSize}) 不是页大小 (${PAGE_SIZE}) 的倍数`);
+    throw new Error(`Target size (${targetSize}) is not a multiple of page size (${PAGE_SIZE})`);
   }
   if (targetSize < MIN_PARTITION_SIZE) {
-    throw new Error(`目标大小 (${targetSize}) 小于最小分区大小 (${MIN_PARTITION_SIZE})`);
+    throw new Error(`Target size (${targetSize}) is less than minimum partition size (${MIN_PARTITION_SIZE})`);
   }
 
   // Allocate buffer filled with 0xFF (erased flash state)
@@ -328,8 +328,8 @@ export function serializeBinary(partition: NvsPartition, targetSize: number): Ui
 
   if (plannedIdx < planned.length) {
     throw new Error(
-      `分区空间不足: 还有 ${planned.length - plannedIdx} 个条目无法写入。` +
-      `请增大分区大小。`
+      `Partition space exhausted: ${planned.length - plannedIdx} entries could not be written. ` +
+      `Increase partition size.`
     );
   }
 

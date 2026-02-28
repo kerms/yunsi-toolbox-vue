@@ -182,27 +182,27 @@ export function validatePartition(partition: NvsPartition): string[] {
   const errors: string[] = [];
 
   if (partition.namespaces.length > MAX_NAMESPACES) {
-    errors.push(`命名空间数量超过上限 ${MAX_NAMESPACES}`);
+    errors.push(`Namespace count exceeds limit ${MAX_NAMESPACES}`);
   }
 
   for (const ns of partition.namespaces) {
     if (ns.length === 0) {
-      errors.push('命名空间名称不能为空');
+      errors.push('Namespace name cannot be empty');
     }
     if (ns.length > MAX_KEY_LENGTH) {
-      errors.push(`命名空间 "${ns}" 名称超过 ${MAX_KEY_LENGTH} 字符`);
+      errors.push(`Namespace "${ns}" exceeds ${MAX_KEY_LENGTH} characters`);
     }
   }
 
   for (const entry of partition.entries) {
     if (entry.key.length === 0) {
-      errors.push(`在命名空间 "${entry.namespace}" 中存在空键名`);
+      errors.push(`Empty key in namespace "${entry.namespace}"`);
     }
     if (entry.key.length > MAX_KEY_LENGTH) {
-      errors.push(`键 "${entry.key}" 名称超过 ${MAX_KEY_LENGTH} 字符`);
+      errors.push(`Key "${entry.key}" exceeds ${MAX_KEY_LENGTH} characters`);
     }
     if (!partition.namespaces.includes(entry.namespace)) {
-      errors.push(`键 "${entry.key}" 的命名空间 "${entry.namespace}" 未注册`);
+      errors.push(`Key "${entry.key}" references unregistered namespace "${entry.namespace}"`);
     }
 
     // Validate value ranges for primitive types
@@ -210,21 +210,21 @@ export function validatePartition(partition: NvsPartition): string[] {
       if (typeof entry.value === 'number') {
         const v = entry.value;
         switch (entry.type) {
-          case NvsType.U8:  if (v < 0 || v > 0xFF) errors.push(`"${entry.key}" U8 值超出范围`); break;
-          case NvsType.I8:  if (v < -128 || v > 127) errors.push(`"${entry.key}" I8 值超出范围`); break;
-          case NvsType.U16: if (v < 0 || v > 0xFFFF) errors.push(`"${entry.key}" U16 值超出范围`); break;
-          case NvsType.I16: if (v < -32768 || v > 32767) errors.push(`"${entry.key}" I16 值超出范围`); break;
-          case NvsType.U32: if (v < 0 || v > 0xFFFFFFFF) errors.push(`"${entry.key}" U32 值超出范围`); break;
-          case NvsType.I32: if (v < -2147483648 || v > 2147483647) errors.push(`"${entry.key}" I32 值超出范围`); break;
+          case NvsType.U8:  if (v < 0 || v > 0xFF) errors.push(`"${entry.key}" U8 value out of range`); break;
+          case NvsType.I8:  if (v < -128 || v > 127) errors.push(`"${entry.key}" I8 value out of range`); break;
+          case NvsType.U16: if (v < 0 || v > 0xFFFF) errors.push(`"${entry.key}" U16 value out of range`); break;
+          case NvsType.I16: if (v < -32768 || v > 32767) errors.push(`"${entry.key}" I16 value out of range`); break;
+          case NvsType.U32: if (v < 0 || v > 0xFFFFFFFF) errors.push(`"${entry.key}" U32 value out of range`); break;
+          case NvsType.I32: if (v < -2147483648 || v > 2147483647) errors.push(`"${entry.key}" I32 value out of range`); break;
         }
       } else if (typeof entry.value === 'bigint') {
         const v = entry.value;
         switch (entry.type) {
           case NvsType.U64:
-            if (v < 0n || v > 0xFFFFFFFFFFFFFFFFn) errors.push(`"${entry.key}" U64 值超出范围`);
+            if (v < 0n || v > 0xFFFFFFFFFFFFFFFFn) errors.push(`"${entry.key}" U64 value out of range`);
             break;
           case NvsType.I64:
-            if (v < -9223372036854775808n || v > 9223372036854775807n) errors.push(`"${entry.key}" I64 值超出范围`);
+            if (v < -9223372036854775808n || v > 9223372036854775807n) errors.push(`"${entry.key}" I64 value out of range`);
             break;
         }
       }
@@ -234,7 +234,7 @@ export function validatePartition(partition: NvsPartition): string[] {
     if (entry.type === NvsType.SZ && typeof entry.value === 'string') {
       const byteLen = new TextEncoder().encode(entry.value).length;
       if (byteLen >= MAX_STRING_LENGTH) {
-        errors.push(`"${entry.key}" 字符串长度 ${byteLen} 字节超过上限 ${MAX_STRING_LENGTH - 1}`);
+        errors.push(`"${entry.key}" string length ${byteLen} bytes exceeds limit ${MAX_STRING_LENGTH - 1}`);
       }
     }
 
@@ -244,11 +244,11 @@ export function validatePartition(partition: NvsPartition): string[] {
     // NvsType.BLOB_DATA uses the V2 chunked format and is capped at MAX_BLOB_SIZE_V2.
     if (entry.type === NvsType.BLOB && entry.value instanceof Uint8Array) {
       if (entry.value.length > MAX_BLOB_SIZE_V1) {
-        errors.push(`"${entry.key}" BLOB ${entry.value.length} 字节超过上限 ${MAX_BLOB_SIZE_V1}`);
+        errors.push(`"${entry.key}" BLOB ${entry.value.length} bytes exceeds limit ${MAX_BLOB_SIZE_V1}`);
       }
     } else if (entry.type === NvsType.BLOB_DATA && entry.value instanceof Uint8Array) {
       if (entry.value.length > MAX_BLOB_SIZE_V2) {
-        errors.push(`"${entry.key}" BLOB ${entry.value.length} 字节超过 V2 上限 ${MAX_BLOB_SIZE_V2}`);
+        errors.push(`"${entry.key}" BLOB ${entry.value.length} bytes exceeds V2 limit ${MAX_BLOB_SIZE_V2}`);
       }
     }
   }
@@ -258,7 +258,7 @@ export function validatePartition(partition: NvsPartition): string[] {
   for (const entry of partition.entries) {
     const k = `${entry.namespace}::${entry.key}`;
     if (seen.has(k)) {
-      errors.push(`重复键: ${entry.namespace}/${entry.key}`);
+      errors.push(`Duplicate key: ${entry.namespace}/${entry.key}`);
     }
     seen.add(k);
   }

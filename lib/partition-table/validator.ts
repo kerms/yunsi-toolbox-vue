@@ -19,7 +19,7 @@ export function validateTable(table: PartitionTable): PartitionValidationError[]
     if (names.has(entry.name)) {
       errors.push({
         type: 'duplicate_name',
-        message: `分区名称重复: "${entry.name}"`,
+        message: `Duplicate partition name: "${entry.name}"`,
         entryA: names.get(entry.name),
         entryB: entry,
       });
@@ -33,14 +33,14 @@ export function validateTable(table: PartitionTable): PartitionValidationError[]
     if (entry.offset !== 0 && entry.offset % SECTOR_SIZE !== 0) {
       errors.push({
         type: 'alignment',
-        message: `"${entry.name}" 偏移 0x${entry.offset.toString(16)} 未对齐到 4KB 边界`,
+        message: `"${entry.name}" offset 0x${entry.offset.toString(16)} not aligned to 4KB boundary`,
         entryA: entry,
       });
     }
     if (entry.size !== 0 && entry.size % SECTOR_SIZE !== 0) {
       errors.push({
         type: 'alignment',
-        message: `"${entry.name}" 大小 0x${entry.size.toString(16)} 未对齐到 4KB 边界`,
+        message: `"${entry.name}" size 0x${entry.size.toString(16)} not aligned to 4KB boundary`,
         entryA: entry,
       });
     }
@@ -57,7 +57,7 @@ export function validateTable(table: PartitionTable): PartitionValidationError[]
       if (a.offset < bEnd && b.offset < aEnd) {
         errors.push({
           type: 'overlap',
-          message: `"${a.name}" [0x${a.offset.toString(16)}..0x${aEnd.toString(16)}] 与 "${b.name}" [0x${b.offset.toString(16)}..0x${bEnd.toString(16)}] 重叠`,
+          message: `"${a.name}" [0x${a.offset.toString(16)}..0x${aEnd.toString(16)}] overlaps "${b.name}" [0x${b.offset.toString(16)}..0x${bEnd.toString(16)}]`,
           entryA: a,
           entryB: b,
         });

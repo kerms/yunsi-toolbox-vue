@@ -16,7 +16,7 @@ function parseFlags(str: string): number {
   for (const part of normalized.split(/[\s|,]+/).filter(Boolean)) {
     if (part === 'encrypted') result |= PartitionFlags.ENCRYPTED;
     else if (part === 'readonly') result |= PartitionFlags.READONLY;
-    else throw new Error(`未知标志: "${part}"`);
+    else throw new Error(`Unknown flag: "${part}"`);
   }
   return result;
 }
@@ -26,9 +26,9 @@ function parseSize(str: string): number {
   str = str.trim();
   if (!str) return 0;
   if (str.startsWith('0x') || str.startsWith('0X')) {
-    if (!/^0x[0-9a-f]+$/i.test(str)) throw new Error(`无效的大小/偏移值: "${str}"`);
+    if (!/^0x[0-9a-f]+$/i.test(str)) throw new Error(`Invalid size/offset value: "${str}"`);
     const v = parseInt(str, 16);
-    if (isNaN(v) || v < 0 || v > U32_MAX) throw new Error(`无效的大小/偏移值: "${str}"`);
+    if (isNaN(v) || v < 0 || v > U32_MAX) throw new Error(`Invalid size/offset value: "${str}"`);
     return v;
   }
 
@@ -40,11 +40,11 @@ function parseSize(str: string): number {
     if (unit === 'K') result = Math.floor(num * 1024);
     else if (unit === 'M') result = Math.floor(num * 1024 * 1024);
     else result = Math.floor(num);
-    if (result > U32_MAX) throw new Error(`无效的大小/偏移值: "${str}" (超出 32 位范围)`);
+    if (result > U32_MAX) throw new Error(`Invalid size/offset value: "${str}" (exceeds 32-bit range)`);
     return result;
   }
 
-  throw new Error(`无效的大小/偏移值: "${str}"`);
+  throw new Error(`Invalid size/offset value: "${str}"`);
 }
 
 /**
@@ -86,7 +86,7 @@ function splitCsvLine(line: string): string[] {
       }
     }
   }
-  if (inQuotes) throw new Error('引号未闭合');
+  if (inQuotes) throw new Error('Unclosed quote');
   fields.push(current.trim());
   return fields;
 }
@@ -111,7 +111,7 @@ export function parseCsv(text: string, onWarning?: (line: number, message: strin
     try {
       const fields = splitCsvLine(line);
       if (fields.length < 5) {
-        onWarning?.(lineIdx + 1, `字段数量不足 (需要 5，实际 ${fields.length}): "${line}"`);
+        onWarning?.(lineIdx + 1, `Not enough fields (need 5, got ${fields.length}): "${line}"`);
         continue;
       }
 
@@ -127,7 +127,7 @@ export function parseCsv(text: string, onWarning?: (line: number, message: strin
 
       const type = NAME_TO_TYPE[typeName];
       if (type === undefined) {
-        onWarning?.(lineIdx + 1, `未知分区类型: "${typeName}"`);
+        onWarning?.(lineIdx + 1, `Unknown partition type: "${typeName}"`);
         continue;
       }
 
@@ -137,7 +137,7 @@ export function parseCsv(text: string, onWarning?: (line: number, message: strin
       const flags = parseFlags(flagsStr);
       entries.push({ name, type, subtype, offset, size, flags });
     } catch (e) {
-      onWarning?.(lineIdx + 1, `解析失败: ${(e as Error).message}`);
+      onWarning?.(lineIdx + 1, `Parse failed: ${(e as Error).message}`);
     }
   }
 

@@ -40,17 +40,17 @@ function parseIntValue(str: string): number {
   let val: number;
   if (str.startsWith('0x') || str.startsWith('0X')) {
     if (!/^-?0[xX][0-9a-fA-F]+$/.test(str)) {
-      throw new Error(`无效的整数值: "${str}"`);
+      throw new Error(`Invalid integer value: "${str}"`);
     }
     val = parseInt(str, 16);
   } else {
     if (!/^-?\d+$/.test(str)) {
-      throw new Error(`无效的整数值: "${str}"`);
+      throw new Error(`Invalid integer value: "${str}"`);
     }
     val = parseInt(str, 10);
   }
   if (Number.isNaN(val)) {
-    throw new Error(`无效的整数值: "${str}"`);
+    throw new Error(`Invalid integer value: "${str}"`);
   }
   return val;
 }
@@ -62,14 +62,14 @@ function parseBigIntValue(str: string): bigint {
   // Handle negative hex explicitly.
   if (str.startsWith('-0x') || str.startsWith('-0X')) {
     if (!/^-0[xX][0-9a-fA-F]+$/.test(str)) {
-      throw new Error(`无效的整数值: "${str}"`);
+      throw new Error(`Invalid integer value: "${str}"`);
     }
     return -BigInt(str.slice(1));
   }
   try {
     return BigInt(str);
   } catch {
-    throw new Error(`无效的整数值: "${str}"`);
+    throw new Error(`Invalid integer value: "${str}"`);
   }
 }
 
@@ -169,20 +169,20 @@ export function parseCsv(text: string): NvsPartition {
     }
 
     if (!currentNamespace) {
-      throw new Error(`行 ${i + 1}: 数据条目 "${key}" 出现在任何命名空间之前`);
+      throw new Error(`Line ${i + 1}: data entry "${key}" appears before any namespace`);
     }
 
     if (type !== 'data' && type !== 'file') {
-      throw new Error(`行 ${i + 1}: 未知类型 "${type}"`);
+      throw new Error(`Line ${i + 1}: unknown type "${type}"`);
     }
 
     if (!encoding) {
-      throw new Error(`行 ${i + 1}: 键 "${key}" 缺少编码类型`);
+      throw new Error(`Line ${i + 1}: key "${key}" missing encoding`);
     }
 
     const nvsType = ENCODING_TO_TYPE[encoding as NvsEncoding];
     if (nvsType === undefined) {
-      throw new Error(`行 ${i + 1}: 未知编码 "${encoding}"`);
+      throw new Error(`Line ${i + 1}: unknown encoding "${encoding}"`);
     }
 
     let parsedValue: number | bigint | string | Uint8Array;

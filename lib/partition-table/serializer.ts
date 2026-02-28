@@ -7,12 +7,12 @@ const U32_MAX = 0xFFFF_FFFF;
 
 function assertU8(val: number, field: string): void {
   if (!Number.isInteger(val) || val < 0 || val > 0xFF)
-    throw new Error(`"${field}" 不是有效的字节值 (0–255): ${val}`);
+    throw new Error(`"${field}" is not a valid byte value (0–255): ${val}`);
 }
 
 function assertU32(val: number, field: string): void {
   if (!Number.isInteger(val) || val < 0 || val > U32_MAX)
-    throw new Error(`"${field}" 不是有效的 32 位无符号整数 (0–0xFFFFFFFF): ${val}`);
+    throw new Error(`"${field}" is not a valid uint32 (0–0xFFFFFFFF): ${val}`);
 }
 
 /**
@@ -26,14 +26,14 @@ export function serializeBinary(table: PartitionTable): Uint8Array {
   let offset = 0;
   for (const entry of table.entries) {
     if (offset + ENTRY_SIZE > TABLE_MAX_SIZE - ENTRY_SIZE) {
-      throw new Error(`分区表条目过多，超过最大容量 (最多 ${Math.floor((TABLE_MAX_SIZE - ENTRY_SIZE) / ENTRY_SIZE)} 条)`);
+      throw new Error(`Too many partition table entries (max ${Math.floor((TABLE_MAX_SIZE - ENTRY_SIZE) / ENTRY_SIZE)})`);
     }
 
-    assertU8(entry.type,    '类型');
-    assertU8(entry.subtype, '子类型');
-    assertU32(entry.offset, '偏移量');
-    assertU32(entry.size,   '大小');
-    assertU32(entry.flags,  '标志');
+    assertU8(entry.type,    'type');
+    assertU8(entry.subtype, 'subtype');
+    assertU32(entry.offset, 'offset');
+    assertU32(entry.size,   'size');
+    assertU32(entry.flags,  'flags');
 
     writeU16(buf, offset, ENTRY_MAGIC);
     buf[offset + 2] = entry.type;

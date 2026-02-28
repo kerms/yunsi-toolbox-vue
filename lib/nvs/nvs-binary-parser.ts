@@ -66,10 +66,10 @@ interface ParsedPage {
  */
 export function parseBinary(data: Uint8Array): NvsPartition {
   if (data.length % PAGE_SIZE !== 0) {
-    throw new Error(`二进制数据大小 (${data.length}) 不是页大小 (${PAGE_SIZE}) 的倍数`);
+    throw new Error(`Invalid NVS size: ${data.length}B`);
   }
   if (data.length === 0) {
-    throw new Error('二进制数据为空');
+    throw new Error('NVS data is empty');
   }
 
   const pageCount = data.length / PAGE_SIZE;

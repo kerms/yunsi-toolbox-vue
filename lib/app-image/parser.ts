@@ -15,13 +15,13 @@ import {
  */
 export function parseAppImage(data: Uint8Array): AppImageInfo {
   if (data.length < IMAGE_HEADER_SIZE + EXTENDED_HEADER_SIZE) {
-    throw new Error(`数据太短: ${data.length} 字节 (最少需要 ${IMAGE_HEADER_SIZE + EXTENDED_HEADER_SIZE} 字节)`);
+    throw new Error(`Image too short: ${data.length}B`);
   }
 
   // ── Image Header (8 bytes: magic + segments + spi_mode + spi_speed_size + entry_addr) ──
   const magic = readU8(data, 0);
   if (magic !== IMAGE_MAGIC) {
-    throw new Error(`无效的魔数: 0x${magic.toString(16)} (应为 0xE9)`);
+    throw new Error(`Invalid image magic: 0x${magic.toString(16)}`);
   }
 
   const segmentCount = readU8(data, 1);

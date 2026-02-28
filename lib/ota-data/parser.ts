@@ -44,7 +44,7 @@ function isEntryValid(entry: OtaSelectEntry): boolean {
  */
 export function parseOtaData(data: Uint8Array, numOtaPartitions = DEFAULT_NUM_OTA_PARTITIONS): OtaData {
   if (data.length < OTA_DATA_MIN_SIZE) {
-    throw new Error(`OTA data too short: ${data.length} bytes, need at least ${OTA_DATA_MIN_SIZE}`);
+    throw new Error(`OTA data too short: ${data.length}B`);
   }
 
   const entry0 = parseEntry(data, 0);
