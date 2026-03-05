@@ -1,7 +1,9 @@
-/** Partition type (top-level: app or data) */
+/** Partition type */
 export enum PartitionType {
-  APP  = 0x00,
-  DATA = 0x01,
+  APP             = 0x00,
+  DATA            = 0x01,
+  BOOTLOADER      = 0x02,
+  PARTITION_TABLE = 0x03,
 }
 
 /** App subtypes */
@@ -40,6 +42,19 @@ export enum DataSubtype {
   LITTLEFS  = 0x83,
 }
 
+/** Bootloader subtypes */
+export enum BootloaderSubtype {
+  PRIMARY  = 0x00,
+  OTA      = 0x01,
+  RECOVERY = 0x02,
+}
+
+/** Partition table subtypes */
+export enum PartTableSubtype {
+  PRIMARY = 0x00,
+  OTA     = 0x01,
+}
+
 /** Partition flags */
 export enum PartitionFlags {
   NONE      = 0x00,
@@ -67,8 +82,10 @@ export interface PartitionTable {
 
 /** Human-readable type name map */
 export const TYPE_NAMES: Record<number, string> = {
-  [PartitionType.APP]:  'app',
-  [PartitionType.DATA]: 'data',
+  [PartitionType.APP]:             'app',
+  [PartitionType.DATA]:            'data',
+  [PartitionType.BOOTLOADER]:      'bootloader',
+  [PartitionType.PARTITION_TABLE]: 'partition_table',
 };
 
 /** Human-readable app subtype name map */
@@ -95,29 +112,47 @@ export const DATA_SUBTYPE_NAMES: Record<number, string> = {
   [DataSubtype.LITTLEFS]: 'littlefs',
 };
 
+/** Human-readable bootloader subtype name map */
+export const BOOTLOADER_SUBTYPE_NAMES: Record<number, string> = {
+  [BootloaderSubtype.PRIMARY]:  'primary',
+  [BootloaderSubtype.OTA]:      'ota',
+  [BootloaderSubtype.RECOVERY]: 'recovery',
+};
+
+/** Human-readable partition table subtype name map */
+export const PART_TABLE_SUBTYPE_NAMES: Record<number, string> = {
+  [PartTableSubtype.PRIMARY]: 'primary',
+  [PartTableSubtype.OTA]:     'ota',
+};
+
+/** Subtype name maps keyed by PartitionType */
+const SUBTYPE_NAME_MAPS: Partial<Record<PartitionType, Record<number, string>>> = {
+  [PartitionType.APP]:             APP_SUBTYPE_NAMES,
+  [PartitionType.DATA]:            DATA_SUBTYPE_NAMES,
+  [PartitionType.BOOTLOADER]:      BOOTLOADER_SUBTYPE_NAMES,
+  [PartitionType.PARTITION_TABLE]: PART_TABLE_SUBTYPE_NAMES,
+};
+
 /** Get human-readable subtype name */
 export function getSubtypeName(type: PartitionType, subtype: number): string {
-  if (type === PartitionType.APP) {
-    return APP_SUBTYPE_NAMES[subtype] ?? `0x${subtype.toString(16).padStart(2, '0')}`;
-  }
-  return DATA_SUBTYPE_NAMES[subtype] ?? `0x${subtype.toString(16).padStart(2, '0')}`;
+  const map = SUBTYPE_NAME_MAPS[type];
+  return map?.[subtype] ?? `0x${subtype.toString(16).padStart(2, '0')}`;
 }
 
 /** Reverse lookup: type name string → PartitionType */
 export const NAME_TO_TYPE: Record<string, PartitionType> = {
-  'app':  PartitionType.APP,
-  'data': PartitionType.DATA,
+  'app':             PartitionType.APP,
+  'data':            PartitionType.DATA,
+  'bootloader':      PartitionType.BOOTLOADER,
+  'partition_table': PartitionType.PARTITION_TABLE,
 };
 
 /** Reverse lookup: subtype name → number, keyed by parent type */
 export function subtypeFromName(type: PartitionType, name: string): number {
   const normalized = name.trim().toLowerCase();
-  if (type === PartitionType.APP) {
-    for (const [val, n] of Object.entries(APP_SUBTYPE_NAMES)) {
-      if (n === normalized) return Number(val);
-    }
-  } else {
-    for (const [val, n] of Object.entries(DATA_SUBTYPE_NAMES)) {
+  const map = SUBTYPE_NAME_MAPS[type];
+  if (map) {
+    for (const [val, n] of Object.entries(map)) {
       if (n === normalized) return Number(val);
     }
   }

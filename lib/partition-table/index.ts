@@ -2,8 +2,8 @@
 export type { PartitionEntry, PartitionTable } from './types';
 
 export {
-  PartitionType, AppSubtype, DataSubtype, PartitionFlags,
-  TYPE_NAMES, APP_SUBTYPE_NAMES, DATA_SUBTYPE_NAMES,
+  PartitionType, AppSubtype, DataSubtype, BootloaderSubtype, PartTableSubtype, PartitionFlags,
+  TYPE_NAMES, APP_SUBTYPE_NAMES, DATA_SUBTYPE_NAMES, BOOTLOADER_SUBTYPE_NAMES, PART_TABLE_SUBTYPE_NAMES,
   NAME_TO_TYPE,
   getSubtypeName, subtypeFromName,
 } from './types';
