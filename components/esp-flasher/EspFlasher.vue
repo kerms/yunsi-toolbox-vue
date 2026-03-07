@@ -31,6 +31,8 @@ type ImageOption = {
   target: string;
 };
 
+const emit = defineEmits(['chipDetected'])
+
 const props = defineProps({
   imageOptions: {
     type: Array as PropType<ImageOption[]>,
@@ -168,6 +170,7 @@ async function programConnect() {
     programConnected.value = true;
 
     chip_type.value = esploader.chip.CHIP_NAME;
+    emit('chipDetected', chip_type.value);
 
     // Temporarily broken
     // await esploader.flashId();
@@ -480,19 +483,13 @@ async function reset() {
 <template>
   <div>
     <div v-show="serialSupported">
-      <el-alert type="info" class="mb-4"  show-icon>
-        烧录 和 日志 是独立的功能，连接中无法切换功能
-      </el-alert>
       <el-tabs>
         <el-tab-pane label="烧录" :disabled="consoleStarted">
           <el-alert v-if="imageOptions.length === 0" type="warning" class="mb-4" show-icon :closable="false">
             未配置固件选项，无法烧录。
           </el-alert>
-          <el-alert type="info" class="mb-4"  show-icon>
-            若无法连接，请先让ESP32进入下载模式，再尝试连接（按住BOOT，按一下RESET，松开BOOT）
-          </el-alert>
           <el-form label-width="auto">
-            <el-form-item label="固件">
+            <el-form-item v-if="imageOptions.length > 1" label="固件">
               <client-only>
                 <el-select
                     v-model="imageSelect"
