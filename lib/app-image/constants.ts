@@ -16,6 +16,12 @@ export const APP_DESC_MAGIC = 0xABCD5432;
 /** Size of esp_app_desc_t structure */
 export const APP_DESC_SIZE = 256;
 
+/** Offset of custom app desc within first segment data (immediately after esp_app_desc_t) */
+export const CUSTOM_DESC_OFFSET_IN_SEGMENT = APP_DESC_SIZE; // 256
+
+/** How many raw bytes to extract for the custom app desc dump */
+export const CUSTOM_DESC_DUMP_SIZE = 64;
+
 /** Chip ID to human-readable name */
 export const CHIP_ID_NAMES: Record<number, string> = {
   0x0000: 'ESP32',
