@@ -1,11 +1,20 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 
-const props = withDefaults(defineProps<{ data: Uint8Array; height?: number }>(), { height: 400 })
+const props = withDefaults(defineProps<{
+  data: Uint8Array
+  height?: number
+  highlight?: { start: number; end: number } | null
+}>(), { height: 400, highlight: null })
+
+const emit = defineEmits<{
+  'byte-hover': [offset: number | null]
+}>()
 
 const BYTES = 16
 const ROW_H = 20
 
+const wrapEl = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 
 const totalRows = computed(() => Math.ceil(props.data.length / BYTES))
@@ -24,19 +33,48 @@ const rows = computed(() => {
   return out
 })
 
+function isHi(offset: number): boolean {
+  return props.highlight != null
+    && offset >= props.highlight.start
+    && offset < props.highlight.end
+}
+
 function onScroll(e: Event) {
   scrollTop.value = (e.target as HTMLElement).scrollTop
 }
+
+defineExpose({
+  scrollTo(offset: number) {
+    const row = Math.floor(offset / BYTES)
+    wrapEl.value?.scrollTo({ top: row * ROW_H, behavior: 'smooth' })
+  },
+})
 </script>
 
 <template>
-  <div class="hd-wrap" :style="{ height: height + 'px' }" @scroll="onScroll">
+  <div ref="wrapEl" class="hd-wrap" :style="{ height: height + 'px' }" @scroll="onScroll">
     <div :style="{ height: totalRows * ROW_H + 'px', position: 'relative' }">
       <div :style="{ transform: `translateY(${firstRow * ROW_H}px)` }">
         <div v-for="row in rows" :key="row.off" class="hd-row">
           <span class="hd-off">{{ row.off.toString(16).padStart(8, '0') }}</span>
-          <span class="hd-hex">{{ row.hex.slice(0, 8).join(' ') }}&nbsp;&nbsp;{{ row.hex.slice(8).join(' ') }}</span>
-          <span class="hd-asc">|{{ row.asc.join('') }}|</span>
+
+          <span class="hd-hex">
+            <span
+              v-for="(h, bi) in row.hex"
+              :key="bi"
+              :class="['hd-byte', { 'hd-byte-hi': isHi(row.off + bi) }, bi === 8 ? 'hd-byte-gap' : '']"
+              @mouseenter="emit('byte-hover', row.off + bi)"
+              @mouseleave="emit('byte-hover', null)"
+            >{{ h }}</span>
+          </span>
+
+          <span class="hd-asc">|<span
+            v-for="(a, bi) in row.asc"
+            :key="bi"
+            :class="['hd-asc-char', { 'hd-byte-hi': isHi(row.off + bi) }]"
+            @mouseenter="emit('byte-hover', row.off + bi)"
+            @mouseleave="emit('byte-hover', null)"
+          >{{ a }}</span>|</span>
         </div>
       </div>
     </div>
@@ -58,7 +96,6 @@ function onScroll(e: Event) {
   align-items: center;
   gap: 12px;
   padding: 0 8px;
-  white-space: pre;
 }
 .hd-row:hover {
   background: var(--el-fill-color-light);
@@ -69,9 +106,30 @@ function onScroll(e: Event) {
   user-select: none;
 }
 .hd-hex {
+  display: inline-flex;
   color: var(--el-text-color-primary);
+}
+.hd-byte {
+  display: inline-block;
+  width: 3ch;
+  cursor: default;
+  border-radius: 2px;
+}
+/* Extra left margin to create the double-space gap between the two groups of 8 */
+.hd-byte-gap {
+  margin-left: 1ch;
+}
+.hd-byte-hi {
+  background: var(--el-color-primary-light-7);
+  color: var(--el-color-primary);
 }
 .hd-asc {
   color: var(--el-text-color-secondary);
+}
+.hd-asc-char {
+  display: inline-block;
+  width: 1ch;
+  cursor: default;
+  border-radius: 2px;
 }
 </style>

@@ -5,7 +5,9 @@ import {
   SPI_FLASH_MODE_NAMES, SPI_FLASH_SPEED_NAMES, SPI_FLASH_SIZE_NAMES,
   parseAppImage,
 } from '../../lib/app-image';
+import { computeFieldRanges, type FieldGroup } from '../../lib/app-image/ranges';
 import HexDump from './HexDump.vue';
+import HexFieldPanel from './HexFieldPanel.vue';
 
 const props = defineProps<{
   isDark?: boolean;
@@ -17,6 +19,9 @@ const showHex = ref(false);
 const statusMessage = ref('');
 const statusType = ref<'success' | 'error' | 'info'>('info');
 const fileName = ref('');
+const fieldGroups = ref<FieldGroup[]>([]);
+const activeRange = ref<{ start: number; end: number } | null>(null);
+const hexDumpRef = ref<InstanceType<typeof HexDump> | null>(null);
 
 let statusTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -43,6 +48,27 @@ function formatSha256(data: Uint8Array): string {
   return Array.from(data).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function onByteHover(offset: number | null) {
+  if (offset === null) { activeRange.value = null; return; }
+  // Pass 1: named field match (checked across all groups first)
+  for (const g of fieldGroups.value) {
+    const f = g.fields.find(f => offset >= f.start && offset < f.end);
+    if (f) { activeRange.value = { start: f.start, end: f.end }; return; }
+  }
+  // Pass 2: data-only group (segment data blobs)
+  for (const g of fieldGroups.value) {
+    if (g.fields.length === 0 && offset >= g.start && offset < g.end) {
+      activeRange.value = { start: g.start, end: g.end }; return;
+    }
+  }
+  activeRange.value = null;
+}
+
+function onFieldSelect(range: { start: number; end: number }) {
+  activeRange.value = range;
+  hexDumpRef.value?.scrollTo(range.start);
+}
+
 async function handleOpenFile(file: File): Promise<false> {
   try {
     const buffer = await file.arrayBuffer();
@@ -53,6 +79,8 @@ async function handleOpenFile(file: File): Promise<false> {
     }
     imageInfo.value = parseAppImage(data);
     rawData.value = data;
+    fieldGroups.value = computeFieldRanges(data, imageInfo.value);
+    activeRange.value = null;
     showHex.value = false;
     fileName.value = file.name;
     showStatus(`已加载 ${file.name} (${data.byteLength} 字节)`, 'success');
@@ -146,7 +174,22 @@ async function handleOpenFile(file: File): Promise<false> {
         <el-button size="small" @click="showHex = !showHex">
           {{ showHex ? '隐藏原始字节' : '查看原始字节' }}
         </el-button>
-        <HexDump v-if="showHex && rawData" :data="rawData" :height="400" class="mt-2" />
+        <template v-if="showHex && rawData">
+          <HexFieldPanel
+            :groups="fieldGroups"
+            :activeRange="activeRange"
+            class="mt-2"
+            @select="onFieldSelect"
+          />
+          <HexDump
+            ref="hexDumpRef"
+            :data="rawData"
+            :height="400"
+            :highlight="activeRange"
+            class="mt-1"
+            @byte-hover="onByteHover"
+          />
+        </template>
       </div>
     </template>
 
