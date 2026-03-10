@@ -63,8 +63,6 @@ export interface AppImageInfo {
   extendedHeader: ExtendedHeader;
   segments: SegmentHeader[];
   appDescription: AppDescription | null;
-  /** Raw bytes at the custom app desc location (null if first segment too short) */
-  customDescRawBytes: Uint8Array | null;
   valid: boolean;
   chipName: string;
 }

@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref } from 'vue';
 import {
   type AppImageInfo,
   SPI_FLASH_MODE_NAMES, SPI_FLASH_SPEED_NAMES, SPI_FLASH_SIZE_NAMES,
   parseAppImage,
 } from '../../lib/app-image';
+import HexDump from './HexDump.vue';
 
 const props = defineProps<{
   isDark?: boolean;
 }>();
 
 const imageInfo = ref<AppImageInfo | null>(null);
+const rawData = ref<Uint8Array | null>(null);
+const showHex = ref(false);
 const statusMessage = ref('');
 const statusType = ref<'success' | 'error' | 'info'>('info');
 const fileName = ref('');
@@ -34,10 +37,6 @@ function formatHex(val: number): string {
   return '0x' + val.toString(16).toUpperCase();
 }
 
-function formatHexDump(data: Uint8Array): string {
-  return Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ');
-}
-
 function formatSha256(data: Uint8Array): string {
   // Check if all zeros (not computed)
   if (data.every(b => b === 0)) return '(未计算)';
@@ -53,6 +52,8 @@ async function handleOpenFile(file: File): Promise<false> {
       throw new Error('ELF 格式不支持。请使用 esptool.py elf2image 将其转换为 .bin 文件');
     }
     imageInfo.value = parseAppImage(data);
+    rawData.value = data;
+    showHex.value = false;
     fileName.value = file.name;
     showStatus(`已加载 ${file.name} (${data.byteLength} 字节)`, 'success');
   } catch (e: any) {
@@ -117,7 +118,13 @@ async function handleOpenFile(file: File): Promise<false> {
         <el-descriptions-item label="SPI引脚驱动">{{ imageInfo.extendedHeader.spiPinDrv.map(formatHex).join(' / ') }}</el-descriptions-item>
         <el-descriptions-item label="最小芯片版本">{{ imageInfo.extendedHeader.minChipRevFull / 100 }}</el-descriptions-item>
         <el-descriptions-item label="最大芯片版本">{{ imageInfo.extendedHeader.maxChipRevFull === 0xFFFF ? '不限' : imageInfo.extendedHeader.maxChipRevFull / 100 }}</el-descriptions-item>
-        <el-descriptions-item label="附加哈希">{{ imageInfo.extendedHeader.hashAppended ? '是' : '否' }}</el-descriptions-item>
+        <el-descriptions-item label="附加哈希" :span="imageInfo.extendedHeader.hashAppended ? 2 : 1">
+          {{ imageInfo.extendedHeader.hashAppended ? '是' : '否' }}
+          <el-text v-if="imageInfo.extendedHeader.hashAppended && rawData"
+                   size="small" class="font-mono" style="margin-left:8px">
+            {{ formatSha256(rawData.slice(-32)) }}
+          </el-text>
+        </el-descriptions-item>
       </el-descriptions>
 
       <!-- Segments -->
@@ -134,13 +141,13 @@ async function handleOpenFile(file: File): Promise<false> {
         </el-table-column>
       </el-table>
 
-      <!-- Custom App Description (raw bytes) -->
-      <template v-if="imageInfo.customDescRawBytes && !imageInfo.customDescRawBytes.every(b => b === 0)">
-        <el-text tag="b" class="block mb-2">自定义应用描述（偏移 288 B，原始字节）</el-text>
-        <el-text size="small" class="font-mono break-all">
-          {{ formatHexDump(imageInfo.customDescRawBytes) }}
-        </el-text>
-      </template>
+      <!-- Hex dump -->
+      <div class="mt-3">
+        <el-button size="small" @click="showHex = !showHex">
+          {{ showHex ? '隐藏原始字节' : '查看原始字节' }}
+        </el-button>
+        <HexDump v-if="showHex && rawData" :data="rawData" :height="400" class="mt-2" />
+      </div>
     </template>
 
     <el-empty v-else description="请打开一个ESP32固件文件 (.bin)" />

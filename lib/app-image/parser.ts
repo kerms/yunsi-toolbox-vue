@@ -5,7 +5,6 @@ import type {
 import {
   IMAGE_MAGIC, IMAGE_HEADER_SIZE, EXTENDED_HEADER_SIZE,
   SEGMENT_HEADER_SIZE, APP_DESC_MAGIC, APP_DESC_SIZE, CHIP_ID_NAMES,
-  CUSTOM_DESC_OFFSET_IN_SEGMENT, CUSTOM_DESC_DUMP_SIZE,
 } from './constants';
 
 /**
@@ -94,21 +93,11 @@ export function parseAppImage(data: Uint8Array): AppImageInfo {
     }
   }
 
-  // ── Custom App Description — fixed offset in first segment ──
-  let customDescRawBytes: Uint8Array | null = null;
-  if (segDataOffsets.length > 0) {
-    const customOff = segDataOffsets[0] + CUSTOM_DESC_OFFSET_IN_SEGMENT;
-    if (customOff + CUSTOM_DESC_DUMP_SIZE <= data.length) {
-      customDescRawBytes = new Uint8Array(data.subarray(customOff, customOff + CUSTOM_DESC_DUMP_SIZE));
-    }
-  }
-
   return {
     header,
     extendedHeader,
     segments,
     appDescription,
-    customDescRawBytes,
     valid: segments.length === segmentCount, // false if image was truncated mid-segment
     chipName: CHIP_ID_NAMES[chipId] ?? `Unknown (0x${chipId.toString(16)})`,
   };
