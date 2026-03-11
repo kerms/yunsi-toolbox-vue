@@ -18,3 +18,7 @@ export {
 
 // Parser
 export { parseAppImage } from './parser';
+
+// Ranges (field ↔ hex highlighting)
+export { computeFieldRanges } from './ranges';
+export type { FieldDef, FieldGroup } from './ranges';

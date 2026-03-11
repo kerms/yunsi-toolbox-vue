@@ -50,6 +50,7 @@ const props = defineProps({
     },
   },
   isDark: Boolean,
+  disableFirmwareSelect: { type: Boolean, default: false },
 });
 
 // ── State ──────────────────────────────────────────────────────────
@@ -485,11 +486,11 @@ async function reset() {
     <div v-show="serialSupported">
       <el-tabs>
         <el-tab-pane label="烧录" :disabled="consoleStarted">
-          <el-alert v-if="imageOptions.length === 0" type="warning" class="mb-4" show-icon :closable="false">
+          <el-alert v-if="imageOptions.length === 0 && !disableFirmwareSelect" type="warning" class="mb-4" show-icon :closable="false">
             未配置固件选项，无法烧录。
           </el-alert>
           <el-form label-width="auto">
-            <el-form-item v-if="imageOptions.length > 1" label="固件">
+            <el-form-item v-if="imageOptions.length > 1 && !disableFirmwareSelect" label="固件">
               <client-only>
                 <el-select
                     v-model="imageSelect"

@@ -1,19 +1,27 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref } from 'vue';
 import {
   type AppImageInfo,
   SPI_FLASH_MODE_NAMES, SPI_FLASH_SPEED_NAMES, SPI_FLASH_SIZE_NAMES,
   parseAppImage,
 } from '../../lib/app-image';
+import { computeFieldRanges, type FieldGroup } from '../../lib/app-image/ranges';
+import HexDump from './HexDump.vue';
+import HexFieldPanel from './HexFieldPanel.vue';
 
 const props = defineProps<{
   isDark?: boolean;
 }>();
 
 const imageInfo = ref<AppImageInfo | null>(null);
+const rawData = ref<Uint8Array | null>(null);
+const showHex = ref(false);
 const statusMessage = ref('');
 const statusType = ref<'success' | 'error' | 'info'>('info');
 const fileName = ref('');
+const fieldGroups = ref<FieldGroup[]>([]);
+const activeRange = ref<{ start: number; end: number } | null>(null);
+const hexDumpRef = ref<InstanceType<typeof HexDump> | null>(null);
 
 let statusTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -44,6 +52,27 @@ function formatSha256(data: Uint8Array): string {
   return Array.from(data).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function onByteHover(offset: number | null) {
+  if (offset === null) { activeRange.value = null; return; }
+  // Pass 1: named field match (checked across all groups first)
+  for (const g of fieldGroups.value) {
+    const f = g.fields.find(f => offset >= f.start && offset < f.end);
+    if (f) { activeRange.value = { start: f.start, end: f.end }; return; }
+  }
+  // Pass 2: data-only group (segment data blobs)
+  for (const g of fieldGroups.value) {
+    if (g.fields.length === 0 && offset >= g.start && offset < g.end) {
+      activeRange.value = { start: g.start, end: g.end }; return;
+    }
+  }
+  activeRange.value = null;
+}
+
+function onFieldSelect(range: { start: number; end: number }) {
+  activeRange.value = range;
+  hexDumpRef.value?.scrollTo(range.start);
+}
+
 async function handleOpenFile(file: File): Promise<false> {
   try {
     const buffer = await file.arrayBuffer();
@@ -53,6 +82,10 @@ async function handleOpenFile(file: File): Promise<false> {
       throw new Error('ELF 格式不支持。请使用 esptool.py elf2image 将其转换为 .bin 文件');
     }
     imageInfo.value = parseAppImage(data);
+    rawData.value = data;
+    fieldGroups.value = computeFieldRanges(data, imageInfo.value);
+    activeRange.value = null;
+    showHex.value = false;
     fileName.value = file.name;
     showStatus(`已加载 ${file.name} (${data.byteLength} 字节)`, 'success');
   } catch (e: any) {
@@ -117,7 +150,13 @@ async function handleOpenFile(file: File): Promise<false> {
         <el-descriptions-item label="SPI引脚驱动">{{ imageInfo.extendedHeader.spiPinDrv.map(formatHex).join(' / ') }}</el-descriptions-item>
         <el-descriptions-item label="最小芯片版本">{{ imageInfo.extendedHeader.minChipRevFull / 100 }}</el-descriptions-item>
         <el-descriptions-item label="最大芯片版本">{{ imageInfo.extendedHeader.maxChipRevFull === 0xFFFF ? '不限' : imageInfo.extendedHeader.maxChipRevFull / 100 }}</el-descriptions-item>
-        <el-descriptions-item label="附加哈希">{{ imageInfo.extendedHeader.hashAppended ? '是' : '否' }}</el-descriptions-item>
+        <el-descriptions-item label="附加哈希" :span="imageInfo.extendedHeader.hashAppended ? 2 : 1">
+          {{ imageInfo.extendedHeader.hashAppended ? '是' : '否' }}
+          <el-text v-if="imageInfo.extendedHeader.hashAppended && rawData"
+                   size="small" class="font-mono" style="margin-left:8px">
+            {{ formatSha256(rawData.slice(-32)) }}
+          </el-text>
+        </el-descriptions-item>
       </el-descriptions>
 
       <!-- Segments -->
@@ -134,13 +173,28 @@ async function handleOpenFile(file: File): Promise<false> {
         </el-table-column>
       </el-table>
 
-      <!-- Custom App Description (raw bytes) -->
-      <template v-if="imageInfo.customDescRawBytes && !imageInfo.customDescRawBytes.every(b => b === 0)">
-        <el-text tag="b" class="block mb-2">自定义应用描述（偏移 288 B，原始字节）</el-text>
-        <el-text size="small" class="font-mono break-all">
-          {{ formatHexDump(imageInfo.customDescRawBytes) }}
-        </el-text>
-      </template>
+      <!-- Hex dump -->
+      <div class="mt-3">
+        <el-button size="small" @click="showHex = !showHex">
+          {{ showHex ? '隐藏原始字节' : '查看原始字节' }}
+        </el-button>
+        <template v-if="showHex && rawData">
+          <HexFieldPanel
+            :groups="fieldGroups"
+            :activeRange="activeRange"
+            class="mt-2"
+            @select="onFieldSelect"
+          />
+          <HexDump
+            ref="hexDumpRef"
+            :data="rawData"
+            :height="400"
+            :highlight="activeRange"
+            class="mt-1"
+            @byte-hover="onByteHover"
+          />
+        </template>
+      </div>
     </template>
 
     <el-empty v-else description="请打开一个ESP32固件文件 (.bin)" />
