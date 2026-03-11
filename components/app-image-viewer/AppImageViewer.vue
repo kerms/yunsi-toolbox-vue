@@ -34,6 +34,10 @@ function formatHex(val: number): string {
   return '0x' + val.toString(16).toUpperCase();
 }
 
+function formatHexDump(data: Uint8Array): string {
+  return Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ');
+}
+
 function formatSha256(data: Uint8Array): string {
   // Check if all zeros (not computed)
   if (data.every(b => b === 0)) return '(未计算)';
@@ -110,6 +114,7 @@ async function handleOpenFile(file: File): Promise<false> {
         <el-descriptions-item label="Flash大小">{{ SPI_FLASH_SIZE_NAMES[imageInfo.header.spiSize] ?? formatHex(imageInfo.header.spiSize) }}</el-descriptions-item>
         <el-descriptions-item label="段数">{{ imageInfo.header.segmentCount }}</el-descriptions-item>
         <el-descriptions-item label="WP引脚">{{ formatHex(imageInfo.extendedHeader.wpPin) }}</el-descriptions-item>
+        <el-descriptions-item label="SPI引脚驱动">{{ imageInfo.extendedHeader.spiPinDrv.map(formatHex).join(' / ') }}</el-descriptions-item>
         <el-descriptions-item label="最小芯片版本">{{ imageInfo.extendedHeader.minChipRevFull / 100 }}</el-descriptions-item>
         <el-descriptions-item label="最大芯片版本">{{ imageInfo.extendedHeader.maxChipRevFull === 0xFFFF ? '不限' : imageInfo.extendedHeader.maxChipRevFull / 100 }}</el-descriptions-item>
         <el-descriptions-item label="附加哈希">{{ imageInfo.extendedHeader.hashAppended ? '是' : '否' }}</el-descriptions-item>
@@ -128,6 +133,14 @@ async function handleOpenFile(file: File): Promise<false> {
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- Custom App Description (raw bytes) -->
+      <template v-if="imageInfo.customDescRawBytes && !imageInfo.customDescRawBytes.every(b => b === 0)">
+        <el-text tag="b" class="block mb-2">自定义应用描述（偏移 288 B，原始字节）</el-text>
+        <el-text size="small" class="font-mono break-all">
+          {{ formatHexDump(imageInfo.customDescRawBytes) }}
+        </el-text>
+      </template>
     </template>
 
     <el-empty v-else description="请打开一个ESP32固件文件 (.bin)" />
