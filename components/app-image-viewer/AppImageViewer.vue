@@ -42,10 +42,6 @@ function formatHex(val: number): string {
   return '0x' + val.toString(16).toUpperCase();
 }
 
-function formatHexDump(data: Uint8Array): string {
-  return Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ');
-}
-
 function formatSha256(data: Uint8Array): string {
   // Check if all zeros (not computed)
   if (data.every(b => b === 0)) return '(未计算)';
