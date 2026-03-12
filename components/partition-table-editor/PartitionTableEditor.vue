@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { ElMessage } from 'element-plus';
 import {
   type PartitionTable, type PartitionEntry,
   PartitionType, PartitionFlags,
@@ -20,8 +21,6 @@ const props = defineProps<{
 // ── Core state ─────────────────────────────────────────────────────
 
 const table = ref<PartitionTable>({ entries: [], md5Valid: false });
-const statusMessage = ref('');
-const statusType = ref<'success' | 'error' | 'info'>('info');
 
 // Add dialog
 const showAddDialog = ref(false);
@@ -51,9 +50,7 @@ function getSubtypeOptionsForType(type: PartitionType) {
 // ── Helpers ────────────────────────────────────────────────────────
 
 function showStatus(msg: string, type: 'success' | 'error' | 'info' = 'info') {
-  statusMessage.value = msg;
-  statusType.value = type;
-  setTimeout(() => { statusMessage.value = ''; }, 4000);
+  ElMessage({ message: msg, type, duration: 4000, showClose: true });
 }
 
 function formatHex(val: number): string {
@@ -262,18 +259,6 @@ function handleExportCsv() {
 
 <template>
   <div>
-    <!-- Status message -->
-    <transition name="el-fade-in">
-      <el-alert
-        v-if="statusMessage"
-        :title="statusMessage"
-        :type="statusType"
-        show-icon
-        closable
-        class="mb-3"
-        @close="statusMessage = ''"
-      />
-    </transition>
 
     <!-- ── Toolbar ── -->
     <div class="flex flex-wrap items-center gap-2 mb-3">

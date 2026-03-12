@@ -1,7 +1,7 @@
 import type { PartitionEntry, PartitionTable } from './types';
 
 export interface PartitionValidationError {
-  type: 'overlap' | 'alignment' | 'duplicate_name';
+  type: 'overlap' | 'alignment' | 'duplicate_name' | 'invalid_encoding';
   message: string;
   entryA?: PartitionEntry;
   entryB?: PartitionEntry;
@@ -12,6 +12,17 @@ const SECTOR_SIZE = 0x1000; // 4KB
 export function validateTable(table: PartitionTable): PartitionValidationError[] {
   const errors: PartitionValidationError[] = [];
   const entries = table.entries;
+
+  // Encoding validation — partition names are stored as null-terminated Latin-1 byte strings
+  for (const entry of entries) {
+    if ([...entry.name].some(c => c.charCodeAt(0) > 0xFF)) {
+      errors.push({
+        type: 'invalid_encoding',
+        message: `Partition name "${entry.name}" contains non-Latin-1 characters (binary format only supports 8-bit characters)`,
+        entryA: entry,
+      });
+    }
+  }
 
   // Duplicate name detection
   const names = new Map<string, PartitionEntry>();
