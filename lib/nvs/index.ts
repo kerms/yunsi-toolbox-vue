@@ -7,6 +7,8 @@ export type {
   NvsEncoding,
 } from './types';
 
+export type { NormalizeResult } from './nvs-partition';
+
 export {
   NvsType,
   NvsVersion,
@@ -53,4 +55,7 @@ export {
   validatePartition,
   sortEntries,
   generateEntryId,
+  normalizePartition,
+  reconcileBlobTypes,
+  checkBlobCompatibility,
 } from './nvs-partition';

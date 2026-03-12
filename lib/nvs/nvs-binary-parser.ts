@@ -9,7 +9,7 @@ import {
   readU8, readU16, readU32, readI8, readI16, readI32, readU64, readI64,
   readNullTermString,
 } from '../shared/binary-reader';
-import { generateEntryId } from './nvs-partition';
+import { generateEntryId, reconcileBlobTypes } from './nvs-partition';
 
 // ── Entry state bitmap ─────────────────────────────────────────────
 
@@ -368,7 +368,7 @@ export function parseBinary(data: Uint8Array): NvsPartition {
   }
 
   return {
-    entries: Array.from(entryMap.values()),
+    entries: reconcileBlobTypes(Array.from(entryMap.values()), detectedVersion),
     namespaces,
     version: detectedVersion,
   };

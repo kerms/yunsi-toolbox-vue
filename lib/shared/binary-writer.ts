@@ -41,10 +41,11 @@ export function writeI64(buf: Uint8Array, off: number, val: bigint) {
   writeU64(buf, off, u);
 }
 
-/** Write null-terminated ASCII string padded to `fieldSize` bytes */
+/** Write null-terminated byte string padded to `fieldSize` bytes, preserving all byte values 0x01–0xFF */
 export function writeNullTermString(buf: Uint8Array, off: number, str: string, fieldSize: number) {
   buf.fill(0, off, off + fieldSize);
-  const encoder = new TextEncoder();
-  const strBytes = encoder.encode(str);
-  buf.set(strBytes.subarray(0, fieldSize - 1), off); // leave room for null
+  const len = Math.min(str.length, fieldSize - 1);
+  for (let i = 0; i < len; i++) {
+    buf[off + i] = str.charCodeAt(i) & 0xFF;
+  }
 }

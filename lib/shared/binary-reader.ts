@@ -37,10 +37,12 @@ export function readI64(buf: Uint8Array, off: number): bigint {
   return v > 0x7FFFFFFFFFFFFFFFn ? v - 0x10000000000000000n : v;
 }
 
-/** Read null-terminated ASCII string of max `maxLen` bytes */
+/** Read null-terminated byte string of max `maxLen` bytes, preserving all byte values 0x01–0xFF */
 export function readNullTermString(buf: Uint8Array, off: number, maxLen: number): string {
-  let end = off;
-  while (end < off + maxLen && buf[end] !== 0) end++;
-  const decoder = new TextDecoder('ascii');
-  return decoder.decode(buf.subarray(off, end));
+  let result = '';
+  for (let i = off; i < off + maxLen; i++) {
+    if (buf[i] === 0) break;
+    result += String.fromCharCode(buf[i]);
+  }
+  return result;
 }

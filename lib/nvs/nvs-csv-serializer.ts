@@ -1,5 +1,5 @@
 import type { NvsPartition } from './types';
-import { NvsType, TYPE_TO_ENCODING, isPrimitiveType } from './types';
+import { NvsType, NvsVersion, TYPE_TO_ENCODING, isPrimitiveType } from './types';
 
 /** Convert Uint8Array to hex string */
 function bytesToHex(data: Uint8Array): string {
@@ -52,8 +52,14 @@ export function serializeCsv(partition: NvsPartition): string {
       } else if (entry.type === NvsType.SZ) {
         valueStr = escapeCsvField(entry.value as string);
       } else {
-        // BLOB / BLOB_DATA — hex encode
-        valueStr = bytesToHex(entry.value as Uint8Array);
+        // BLOB / BLOB_DATA — version-aware encoding
+        const hex = bytesToHex(entry.value as Uint8Array);
+        // V1 uses 'blob' (monolithic single entry in binary).
+        // V2 uses 'hex2bin' (chunked BLOB_DATA + BLOB_IDX); nvs_partition_gen.py
+        // rejects 'blob' for V2 and would produce a V1 binary from it.
+        const csvEncoding = partition.version === NvsVersion.V1 ? 'blob' : 'hex2bin';
+        lines.push(`${escapeCsvField(entry.key)},data,${csvEncoding},${hex}`);
+        continue;
       }
 
       lines.push(`${escapeCsvField(entry.key)},data,${encoding},${valueStr}`);

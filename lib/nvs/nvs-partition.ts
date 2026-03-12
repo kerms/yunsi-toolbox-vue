@@ -2,6 +2,15 @@ import type { NvsEntry, NvsPartition, NvsFlashStats } from './types';
 import { NvsType, NvsVersion, isPrimitiveType } from './types';
 import { ENTRIES_PER_PAGE, ENTRY_SIZE, PAGE_SIZE, MAX_KEY_LENGTH, MAX_NAMESPACES, MAX_STRING_LENGTH, MAX_BLOB_SIZE_V1, MAX_BLOB_SIZE_V2 } from './constants';
 
+/** Result of normalizing a raw deserialized partition. */
+export interface NormalizeResult {
+  partition: NvsPartition;
+  /** Entries that were completely unsalvageable and removed. */
+  dropped: number;
+  /** Entries whose numeric values were clamped to fit the type range. */
+  clamped: number;
+}
+
 /** Generate a random unique ID for client-side entry tracking */
 export function generateEntryId(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -102,7 +111,7 @@ export function mergePartitions(
     }
   }
 
-  return { ...target, entries, namespaces };
+  return { ...target, entries: reconcileBlobTypes(entries, target.version), namespaces };
 }
 
 /** Calculate the entry span for a single NvsEntry */
@@ -192,6 +201,9 @@ export function validatePartition(partition: NvsPartition): string[] {
     if (ns.length > MAX_KEY_LENGTH) {
       errors.push(`Namespace "${ns}" exceeds ${MAX_KEY_LENGTH} characters`);
     }
+    if ([...ns].some(c => c.charCodeAt(0) > 0xFF)) {
+      errors.push(`Namespace "${ns}" contains non-Latin-1 characters (binary format only supports 8-bit characters)`);
+    }
   }
 
   for (const entry of partition.entries) {
@@ -200,6 +212,9 @@ export function validatePartition(partition: NvsPartition): string[] {
     }
     if (entry.key.length > MAX_KEY_LENGTH) {
       errors.push(`Key "${entry.key}" exceeds ${MAX_KEY_LENGTH} characters`);
+    }
+    if ([...entry.key].some(c => c.charCodeAt(0) > 0xFF)) {
+      errors.push(`Key "${entry.key}" contains non-Latin-1 characters (binary format only supports 8-bit characters)`);
     }
     if (!partition.namespaces.includes(entry.namespace)) {
       errors.push(`Key "${entry.key}" references unregistered namespace "${entry.namespace}"`);
@@ -251,6 +266,18 @@ export function validatePartition(partition: NvsPartition): string[] {
         errors.push(`"${entry.key}" BLOB ${entry.value.length} bytes exceeds V2 limit ${MAX_BLOB_SIZE_V2}`);
       }
     }
+
+    // BLOB_IDX is an internal serializer type — it must never appear as a user entry.
+    if (entry.type === NvsType.BLOB_IDX) {
+      errors.push(`"${entry.key}" has internal-only type BLOB_IDX (synthesized by serializer, not valid user input)`);
+    }
+    // Version/type consistency — prevents poisoned binaries.
+    if (entry.type === NvsType.BLOB_DATA && partition.version === NvsVersion.V1) {
+      errors.push(`"${entry.key}" has V2-only type BLOB_DATA in a V1 (IDF < v4.0) partition`);
+    }
+    if (entry.type === NvsType.BLOB && partition.version === NvsVersion.V2) {
+      errors.push(`"${entry.key}" has V1-only type BLOB in a V2 (IDF ≥ v4.0) partition`);
+    }
   }
 
   // Check for duplicate (namespace, key) pairs
@@ -273,4 +300,151 @@ export function sortEntries(partition: NvsPartition): NvsPartition {
     return nsCmp !== 0 ? nsCmp : a.key.localeCompare(b.key);
   });
   return { ...partition, entries };
+}
+
+/**
+ * Coerce BLOB/BLOB_DATA types to match partition version.
+ * V1 partitions use monolithic BLOB (0x41); V2 partitions use chunked BLOB_DATA (0x42).
+ * Must be called at every import boundary (JSON, localStorage, binary parser).
+ */
+export function reconcileBlobTypes(entries: NvsEntry[], version: NvsVersion): NvsEntry[] {
+  return entries.map(e => {
+    if (version === NvsVersion.V1 && e.type === NvsType.BLOB_DATA) return { ...e, type: NvsType.BLOB };
+    if (version === NvsVersion.V2 && e.type === NvsType.BLOB)      return { ...e, type: NvsType.BLOB_DATA };
+    return e;
+  });
+}
+
+/**
+ * Normalize and validate a raw deserialized object into a well-formed NvsPartition.
+ * Single gate for all deserialization paths (localStorage restore + JSON import/merge).
+ * Never throws. Regenerates missing/duplicate ids. Strips NUL bytes from keys and namespaces.
+ * Returns metadata about dropped and clamped entries for UI warnings.
+ */
+export function normalizePartition(raw: unknown): NormalizeResult {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { partition: createEmptyPartition(), dropped: 0, clamped: 0 };
+  }
+  const obj = raw as Record<string, unknown>;
+
+  const VALID_VERSIONS = new Set<number>([NvsVersion.V1, NvsVersion.V2]);
+  const version: NvsVersion =
+    typeof obj.version === 'number' && VALID_VERSIONS.has(obj.version)
+      ? (obj.version as NvsVersion)
+      : NvsVersion.V2;
+
+  // BLOB_IDX (0x48) is synthesized internally by the serializer; it is never a valid
+  // user entry. All other NvsType values are acceptable user input.
+  const VALID_TYPES = new Set<number>([
+    NvsType.U8, NvsType.I8, NvsType.U16, NvsType.I16,
+    NvsType.U32, NvsType.I32, NvsType.U64, NvsType.I64,
+    NvsType.SZ, NvsType.BLOB, NvsType.BLOB_DATA,
+  ]);
+  const rawEntries = Array.isArray(obj.entries) ? obj.entries : [];
+  const seenIds = new Set<string>();
+  const entries: NvsEntry[] = [];
+  let dropped = 0;
+  let clamped = 0;
+
+  for (const re of rawEntries) {
+    if (!re || typeof re !== 'object' || Array.isArray(re)) { dropped++; continue; }
+    const r = re as Record<string, unknown>;
+    if (typeof r.type !== 'number' || !VALID_TYPES.has(r.type)) { dropped++; continue; }
+    const type = r.type as NvsType;
+    const namespace = typeof r.namespace === 'string' ? r.namespace.replace(/\0/g, '') : '';
+    if (typeof r.key !== 'string') { dropped++; continue; }
+    const key = r.key.replace(/\0/g, '');
+    if (key.length === 0) { dropped++; continue; }
+    const result = _normalizeEntryValue(type, r.value);
+    if (result === null) { dropped++; continue; }
+    if (result.clamped) clamped++;
+    let id = typeof r.id === 'string' && r.id.length > 0 ? r.id : '';
+    if (!id || seenIds.has(id)) id = generateEntryId();
+    seenIds.add(id);
+    entries.push({ id, namespace, key, type, value: result.value });
+  }
+
+  const reconciledEntries = reconcileBlobTypes(entries, version);
+
+  // Rebuild namespaces: preserve stored order, deduplicate, add missing, drop unused
+  const rawNs = Array.isArray(obj.namespaces) ? obj.namespaces : [];
+  const orderedNs = (rawNs.filter((n): n is string => typeof n === 'string'))
+    .reduce<string[]>((acc, n) => { if (!acc.includes(n)) acc.push(n); return acc; }, []);
+  for (const e of reconciledEntries) {
+    if (e.namespace && !orderedNs.includes(e.namespace)) orderedNs.push(e.namespace);
+  }
+  const usedNs = new Set(reconciledEntries.map(e => e.namespace));
+  const namespaces = orderedNs.filter(n => usedNs.has(n));
+
+  return { partition: { entries: reconciledEntries, namespaces, version }, dropped, clamped };
+}
+
+/** Returns normalized value for type, or null if unsalvageable. `clamped` is true if the value was modified. */
+function _normalizeEntryValue(type: NvsType, raw: unknown): { value: NvsEntry['value']; clamped: boolean } | null {
+  // U64/I64 MUST come before isPrimitiveType() check — isPrimitiveType includes them
+  // but they require BigInt to avoid Number() precision loss above 2^53.
+  if (type === NvsType.U64 || type === NvsType.I64) {
+    if (typeof raw === 'bigint') return _clampBigInt(type, raw);
+    if (typeof raw === 'number') return _clampBigInt(type, BigInt(Math.trunc(raw)));
+    if (typeof raw === 'string') {
+      try { return _clampBigInt(type, BigInt(raw)); } catch { return null; }
+    }
+    return null;
+  }
+  if (isPrimitiveType(type)) {
+    let n: number;
+    if (typeof raw === 'number') n = raw;
+    else if (typeof raw === 'string') { n = Number(raw); if (Number.isNaN(n)) return null; }
+    else return null;
+    return _clampPrimitive(type, Math.trunc(n));
+  }
+  if (type === NvsType.SZ) return typeof raw === 'string' ? { value: raw, clamped: false } : null;
+  // BLOB / BLOB_DATA / BLOB_IDX — already revived by partitionFromJson reviver
+  if (raw instanceof Uint8Array) return { value: raw, clamped: false };
+  return null; // malformed/missing blob payload — drop the entry
+}
+
+function _clampPrimitive(type: NvsType, n: number): { value: number; clamped: boolean } {
+  let v: number;
+  switch (type) {
+    case NvsType.U8:  v = Math.max(0, Math.min(0xFF, n)); break;
+    case NvsType.I8:  v = Math.max(-128, Math.min(127, n)); break;
+    case NvsType.U16: v = Math.max(0, Math.min(0xFFFF, n)); break;
+    case NvsType.I16: v = Math.max(-32768, Math.min(32767, n)); break;
+    case NvsType.U32: v = Math.max(0, Math.min(0xFFFFFFFF, n)); break;
+    case NvsType.I32: v = Math.max(-2147483648, Math.min(2147483647, n)); break;
+    default:          v = n;
+  }
+  return { value: v, clamped: v !== n };
+}
+
+function _clampBigInt(type: NvsType, v: bigint): { value: bigint; clamped: boolean } {
+  let r: bigint;
+  if (type === NvsType.U64) {
+    r = v < 0n ? 0n : v > 0xFFFFFFFFFFFFFFFFn ? 0xFFFFFFFFFFFFFFFFn : v;
+  } else {
+    // I64
+    r = v < -9223372036854775808n ? -9223372036854775808n
+      : v >  9223372036854775807n ?  9223372036854775807n : v;
+  }
+  return { value: r, clamped: r !== v };
+}
+
+/**
+ * Check blob entries against the target version's size limit.
+ * Returns human-readable warnings for each oversized blob.
+ */
+export function checkBlobCompatibility(
+  entries: NvsEntry[],
+  targetVersion: NvsVersion,
+): string[] {
+  const limit = targetVersion === NvsVersion.V1 ? MAX_BLOB_SIZE_V1 : MAX_BLOB_SIZE_V2;
+  const warnings: string[] = [];
+  for (const e of entries) {
+    if ((e.type === NvsType.BLOB || e.type === NvsType.BLOB_DATA) &&
+        e.value instanceof Uint8Array && e.value.length > limit) {
+      warnings.push(`"${e.key}" (${e.value.length}B) 超出限制 ${limit}B`);
+    }
+  }
+  return warnings;
 }

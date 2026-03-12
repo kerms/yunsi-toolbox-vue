@@ -1,6 +1,6 @@
 import type { NvsPartition, NvsEntry, NvsEncoding } from './types';
 import { NvsType, NvsVersion, ENCODING_TO_TYPE } from './types';
-import { generateEntryId } from './nvs-partition';
+import { generateEntryId, reconcileBlobTypes } from './nvs-partition';
 
 /**
  * Parse a line respecting quoted fields.
@@ -73,9 +73,12 @@ function parseBigIntValue(str: string): bigint {
   }
 }
 
-/** Decode hex string (e.g. "48656c6c6f") to Uint8Array */
+/** Decode hex string (e.g. "48656c6c6f") to Uint8Array. Throws on non-hex characters. */
 function hexToBytes(hex: string): Uint8Array {
   hex = hex.replace(/\s/g, '');
+  if (hex.length > 0 && !/^[0-9a-fA-F]+$/.test(hex)) {
+    throw new Error('Invalid hex string: contains non-hex characters');
+  }
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
@@ -144,6 +147,7 @@ export function parseCsv(text: string): NvsPartition {
   const entries: NvsEntry[] = [];
   const namespaces: string[] = [];
   let currentNamespace = '';
+  let inferredVersion = NvsVersion.V2;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -157,7 +161,8 @@ export function parseCsv(text: string): NvsPartition {
 
     const key = fields[0];
     const type = fields[1];
-    const encoding = (fields[2] || '').toLowerCase() as NvsEncoding | '';
+    const rawEncoding = (fields[2] || '').toLowerCase();
+    const encoding = rawEncoding as NvsEncoding | '';
     const value = fields[3] || '';
 
     if (type === 'namespace') {
@@ -180,6 +185,33 @@ export function parseCsv(text: string): NvsPartition {
       throw new Error(`Line ${i + 1}: key "${key}" missing encoding`);
     }
 
+    // --- nvs_partition_gen.py-compatible encodings (not in NvsEncoding) ---
+    if (rawEncoding === 'hex2bin') {
+      const hexClean = value.replace(/\s/g, '');
+      if (hexClean.length % 2 !== 0) throw new Error(`Line ${i + 1}: hex2bin value must have even number of hex chars`);
+      entries.push({
+        id: generateEntryId(),
+        namespace: currentNamespace,
+        key,
+        type: NvsType.BLOB_DATA,
+        value: hexClean.length === 0 ? new Uint8Array(0) : hexToBytes(hexClean),
+      });
+      continue;
+    }
+    if (rawEncoding === 'base64') {
+      const decoded = tryBase64Decode(value);
+      if (!decoded) throw new Error(`Line ${i + 1}: invalid base64 value for key "${key}"`);
+      entries.push({
+        id: generateEntryId(),
+        namespace: currentNamespace,
+        key,
+        type: NvsType.BLOB_DATA,
+        value: decoded,
+      });
+      continue;
+    }
+    // --- end nvs_partition_gen.py encodings ---
+
     const nvsType = ENCODING_TO_TYPE[encoding as NvsEncoding];
     if (nvsType === undefined) {
       throw new Error(`Line ${i + 1}: unknown encoding "${encoding}"`);
@@ -200,6 +232,7 @@ export function parseCsv(text: string): NvsPartition {
         break;
       case 'blob':
       case 'binary': {
+        if (encoding === 'blob') inferredVersion = NvsVersion.V1;
         if (type === 'file') {
           // In browser context, file paths can't be resolved.
           // Store an empty Uint8Array — the UI should handle file picking.
@@ -229,5 +262,5 @@ export function parseCsv(text: string): NvsPartition {
     });
   }
 
-  return { entries, namespaces, version: NvsVersion.V2 };
+  return { entries: reconcileBlobTypes(entries, inferredVersion), namespaces, version: inferredVersion };
 }
