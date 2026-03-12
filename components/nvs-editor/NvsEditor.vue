@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
-import { ElMessage } from 'element-plus';
-import { Upload, View, CopyDocument, Delete, Plus } from '@element-plus/icons-vue';
+import { ref, computed, watch, onMounted, onUnmounted, reactive } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { Upload, View, CopyDocument, Delete, Plus, Search, ArrowDown, FolderOpened, Download, Document, MoreFilled } from '@element-plus/icons-vue';
 import {
-  type NvsPartition, type NvsEntry, type NvsEncoding, type NvsFlashStats,
+  type NvsPartition, type NvsEntry, type NvsEncoding, type NvsFlashStats, type ValidationError,
   NvsType, NvsVersion,
   ENCODING_TO_TYPE, TYPE_TO_ENCODING,
   isPrimitiveType,
@@ -27,9 +27,10 @@ const targetSize = ref(0x4000);
 // ── UI state ───────────────────────────────────────────────────────
 
 const namespaceFilter = ref('');
-const keySearch = ref('');
+const searchQuery = ref('');
 const mergeMode = ref<'overwrite' | 'skip'>('overwrite');
 const showHex = ref(false);
+const isSmallScreen = ref(false);
 
 // Inline new row state
 const newRow = ref({ namespace: '', key: '', encoding: 'u8' as NvsEncoding, value: '' });
@@ -39,7 +40,7 @@ const showValueDialog = ref(false);
 const valueDialogEntry = ref<NvsEntry | null>(null);
 
 // Column sort state
-const sortProp = ref<'namespace' | 'key' | null>(null);
+const sortProp = ref<'namespace' | 'key' | 'value' | null>(null);
 const sortOrder = ref<'ascending' | 'descending' | null>(null);
 
 // File input refs
@@ -51,6 +52,10 @@ const openJsonInput = ref<HTMLInputElement>();
 const mergeJsonInput = ref<HTMLInputElement>();
 const blobUploadInput = ref<HTMLInputElement>();
 const blobUploadEntryId = ref('');
+
+/** Transient editing buffers for inline table editing.
+ *  Key: "entryId:field" → raw string value. */
+const editingCells = reactive(new Map<string, string>());
 
 // ── Persistence ────────────────────────────────────────────────────
 
@@ -86,7 +91,11 @@ watch(targetSize, (val) => {
   try { localStorage.setItem(STORAGE_SIZE_KEY, String(val)); } catch {}
 });
 
+function _onResize() { isSmallScreen.value = window.innerWidth < 640; }
+
 onMounted(() => {
+  isSmallScreen.value = window.innerWidth < 640;
+  window.addEventListener('resize', _onResize);
   try {
     const s = localStorage.getItem(STORAGE_KEY);
     if (s) partition.value = normalizePartition(partitionFromJson(s)).partition;
@@ -100,6 +109,8 @@ onMounted(() => {
   } catch {}
 });
 
+onUnmounted(() => { window.removeEventListener('resize', _onResize); });
+
 // ── Computed ───────────────────────────────────────────────────────
 
 const flashStats = computed<NvsFlashStats>(() =>
@@ -108,14 +119,62 @@ const flashStats = computed<NvsFlashStats>(() =>
 
 const errors = computed(() => validatePartition(partition.value));
 
+/** Map entry ID → validation errors for that entry (for red highlighting) */
+const entryErrors = computed(() => {
+  const map = new Map<string, string[]>();
+  for (const err of errors.value) {
+    if (err.entryId) {
+      if (!map.has(err.entryId)) map.set(err.entryId, []);
+      map.get(err.entryId)!.push(err.message);
+    }
+  }
+  return map;
+});
+
+const _blobHexCache = new WeakMap<Uint8Array, string>();
+
+/** Stringify entry value for search/sort comparison */
+function valueToString(entry: NvsEntry): string {
+  if (entry.value instanceof Uint8Array) {
+    let hex = _blobHexCache.get(entry.value);
+    if (!hex) { hex = blobToHex(entry.value); _blobHexCache.set(entry.value, hex); }
+    return hex;
+  }
+  return String(entry.value);
+}
+
 const filteredEntries = computed(() => {
   let entries = partition.value.entries;
   if (namespaceFilter.value) entries = entries.filter(e => e.namespace === namespaceFilter.value);
-  if (keySearch.value) entries = entries.filter(e => e.key.includes(keySearch.value));
+  if (searchQuery.value) {
+    const q = searchQuery.value.toLowerCase();
+    entries = entries.filter(e =>
+      e.key.toLowerCase().includes(q) || valueToString(e).toLowerCase().includes(q),
+    );
+  }
   if (sortProp.value && sortOrder.value) {
     const col = sortProp.value;
     const dir = sortOrder.value === 'ascending' ? 1 : -1;
-    entries = [...entries].sort((a, b) => dir * a[col].localeCompare(b[col]));
+    if (col === 'value') {
+      entries = [...entries].sort((a, b) => {
+        const av = a.value, bv = b.value;
+        if (typeof av === 'number' && typeof bv === 'number') return dir * (av - bv);
+        if (typeof av === 'bigint' && typeof bv === 'bigint') return dir * (av < bv ? -1 : av > bv ? 1 : 0);
+        // Mixed integer types: coerce to BigInt for precision-safe comparison
+        if ((typeof av === 'number' || typeof av === 'bigint') &&
+            (typeof bv === 'number' || typeof bv === 'bigint')) {
+          const an = typeof av === 'bigint' ? av : BigInt(av);
+          const bn = typeof bv === 'bigint' ? bv : BigInt(bv);
+          return dir * (an < bn ? -1 : an > bn ? 1 : 0);
+        }
+        // For blob sort: use cheap 8-byte preview, not full blobToHex
+        const as_ = av instanceof Uint8Array ? formatValue(a) : String(av);
+        const bs_ = bv instanceof Uint8Array ? formatValue(b) : String(bv);
+        return dir * as_.localeCompare(bs_);
+      });
+    } else {
+      entries = [...entries].sort((a, b) => dir * a[col].localeCompare(b[col]));
+    }
   }
   return entries;
 });
@@ -176,12 +235,44 @@ function hasNonPrintable(s: string): boolean {
   return false;
 }
 
-/** Display namespace: hexdump format when showHex is on */
-function displayNamespace(s: string): string {
-  if (showHex.value) {
-    return Array.from(s, c => c.charCodeAt(0).toString(16).padStart(2, '0')).join(' ');
+/** Hex-dump a string as space-separated UTF-8 byte values (for string values) */
+function displayHex(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(' ');
+}
+
+/** Hex-dump a string as space-separated Latin-1 byte values (for keys and namespaces) */
+function displayHexLatin1(s: string): string {
+  return Array.from(s, c => c.charCodeAt(0).toString(16).padStart(2, '0')).join(' ');
+}
+
+/** Display a namespace/key string with hex mode support (Latin-1 encoding) */
+function displayStr(s: string): string {
+  return showHex.value ? displayHexLatin1(s) : s;
+}
+
+/** Format entry value for hex display */
+function formatValueHex(entry: NvsEntry): string {
+  if (entry.value instanceof Uint8Array) return formatValue(entry);
+  if (typeof entry.value === 'bigint') {
+    // Negative I64: show two's complement unsigned representation
+    const v = entry.value < 0n ? BigInt.asUintN(64, entry.value) : entry.value;
+    return '0x' + v.toString(16).toUpperCase();
   }
-  return s;
+  if (typeof entry.value === 'number') {
+    // Negative signed integers: mask to proper unsigned width (two's complement)
+    let v = entry.value;
+    if (v < 0) {
+      switch (entry.type) {
+        case NvsType.I8:  v = v & 0xFF; break;
+        case NvsType.I16: v = v & 0xFFFF; break;
+        case NvsType.I32: v = v >>> 0; break;
+      }
+    }
+    return '0x' + v.toString(16).toUpperCase();
+  }
+  if (typeof entry.value === 'string') return displayHex(entry.value);
+  return String(entry.value);
 }
 
 /** Format raw string for display — non-printable bytes become \xHH, backslash becomes \\\\ */
@@ -211,6 +302,11 @@ function parseEscapes(s: string): string {
     if (esc === '\\') return '\\';
     return '\\' + esc;
   });
+}
+
+/** Full hex string of a Uint8Array (for editing buffer) */
+function blobToHex(data: Uint8Array): string {
+  return Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ');
 }
 
 /** Preview of blob value for table cell (up to 8 bytes) */
@@ -317,7 +413,6 @@ function handleInlineAddEntry() {
     value,
   });
   newRow.value.key = autoIncrementKey(newRow.value.key);
-  newRow.value.value = '';
   showStatus('已添加', 'success');
 }
 
@@ -337,8 +432,11 @@ function handleClear() {
 
 // ── Actions: Inline edit ───────────────────────────────────────────
 
-function handleUpdateKey(entryId: string, newKey: string) {
+function handleUpdateKey(entryId: string, newKey: string): boolean {
+  if (!newKey) { showStatus('键名不能为空', 'error'); return false; }
+  if (newKey.length > MAX_KEY_LENGTH) { showStatus(`键名超过 ${MAX_KEY_LENGTH} 字符`, 'error'); return false; }
   partition.value = updateEntry(partition.value, entryId, { key: newKey });
+  return true;
 }
 
 function handleUpdateNamespace(entryId: string, ns: string) {
@@ -347,28 +445,81 @@ function handleUpdateNamespace(entryId: string, ns: string) {
 
 function handleUpdateEncoding(entryId: string, encoding: NvsEncoding) {
   const type = ENCODING_TO_TYPE[encoding];
+  const entry = partition.value.entries.find(e => e.id === entryId);
+  if (!entry) return;
+
+  const oldValue = entry.value;
   let value: NvsEntry['value'];
-  if (isPrimitiveType(type)) value = 0;
-  else if (type === NvsType.SZ) value = '';
-  else value = new Uint8Array(0);
+  const isBigIntType = type === NvsType.U64 || type === NvsType.I64;
+
+  if (isBigIntType) {
+    if (typeof oldValue === 'bigint') value = oldValue;
+    else if (typeof oldValue === 'number') value = BigInt(Math.trunc(oldValue));
+    else if (typeof oldValue === 'string') {
+      try { value = BigInt(oldValue); } catch { value = 0n; }
+    } else value = 0n;
+  } else if (isPrimitiveType(type)) {
+    if (typeof oldValue === 'number') value = oldValue;
+    else if (typeof oldValue === 'bigint') value = Number(oldValue);
+    else if (typeof oldValue === 'string') {
+      const n = Number(oldValue);
+      value = Number.isNaN(n) ? 0 : Math.trunc(n);
+    } else value = 0;
+  } else if (type === NvsType.SZ) {
+    if (typeof oldValue === 'string') value = oldValue;
+    else if (typeof oldValue === 'number' || typeof oldValue === 'bigint') value = String(oldValue);
+    else value = '';
+  } else {
+    value = oldValue instanceof Uint8Array ? oldValue : new Uint8Array(0);
+  }
+
   partition.value = updateEntry(partition.value, entryId, { type, value });
+  editingCells.delete(entryId + ':value');
 }
 
-function handleUpdateValue(entryId: string, encoding: NvsEncoding, raw: string) {
+function handleUpdateValue(entryId: string, encoding: NvsEncoding, raw: string): boolean {
   let value: ReturnType<typeof parseValueInput>;
   try {
     value = parseValueInput(encoding, raw);
   } catch (e: any) {
     showStatus(e.message ?? '值格式错误', 'error');
-    return;
+    return false;
   }
   partition.value = updateEntry(partition.value, entryId, { value });
+  return true;
+}
+
+/** Commit the editing buffer for a cell. Buffer is cleared only on success. */
+function commitEdit(entryId: string, field: string) {
+  const bufKey = entryId + ':' + field;
+  const val = editingCells.get(bufKey);
+  if (val === undefined) return;
+
+  let ok: boolean;
+  if (field === 'key') {
+    ok = handleUpdateKey(entryId, parseEscapes(val));
+  } else {
+    const entry = partition.value.entries.find(e => e.id === entryId);
+    if (!entry) { editingCells.delete(bufKey); return; }
+    if (entry.type === NvsType.SZ) {
+      partition.value = updateEntry(partition.value, entryId, { value: parseEscapes(val) });
+      ok = true;
+    } else {
+      ok = handleUpdateValue(entryId, getEncodingForType(entry.type), val);
+    }
+  }
+  if (ok) editingCells.delete(bufKey);
+}
+
+/** Cancel editing: discard buffer so display reverts to stored value. */
+function cancelEdit(entryId: string, field: string) {
+  editingCells.delete(entryId + ':' + field);
 }
 
 // ── Actions: Sort ──────────────────────────────────────────────────
 
 function handleSortChange({ prop, order }: { prop: string; order: 'ascending' | 'descending' | null }) {
-  sortProp.value = prop as 'namespace' | 'key' | null;
+  sortProp.value = prop as 'namespace' | 'key' | 'value' | null;
   sortOrder.value = order;
 }
 
@@ -392,7 +543,7 @@ async function onOpenBinChange(e: Event) {
 function handleExportBinary() {
   try {
     const errs = validatePartition(partition.value);
-    if (errs.length > 0) { showStatus(`验证错误: ${errs[0]}`, 'error'); return; }
+    if (errs.length > 0) { showStatus(`验证错误: ${errs[0].message}`, 'error'); return; }
     const data = serializeBinary(partition.value, targetSize.value);
     downloadBlob(new Blob([data as Uint8Array<ArrayBuffer>]), 'nvs.bin');
     showStatus('已导出 nvs.bin', 'success');
@@ -560,7 +711,7 @@ function copyToClipboard(text: string) {
 </script>
 
 <template>
-  <div>
+  <div class="nvs-editor-container">
     <!-- Hidden file inputs -->
     <input ref="openBinInput" type="file" accept=".bin" style="display:none" @change="onOpenBinChange" />
     <input ref="mergeBinInput" type="file" accept=".bin" style="display:none" @change="onMergeBinChange" />
@@ -574,432 +725,454 @@ function copyToClipboard(text: string) {
       v-if="errors.length > 0"
       type="warning"
       show-icon
-      class="mb-3"
+      class="mb-4"
       :closable="false"
     >
       <template #title>验证问题 ({{ errors.length }})</template>
-      <div v-for="(err, i) in errors" :key="i" class="text-xs">{{ err }}</div>
+      <div v-for="(err, i) in errors" :key="i" class="text-xs">{{ err.message }}</div>
     </el-alert>
 
-    <div class="nvs-editor-layout">
-    <div class="nvs-editor-main">
-
-    <!-- ── Stats bar ── -->
-    <div class="flex items-center justify-between flex-wrap gap-3 px-3.5 py-2.5 mb-3 rounded-lg border border-solid" style="background: var(--vp-c-bg-soft); border-color: var(--vp-c-divider);">
-      <div class="flex items-center flex-wrap gap-2">
-        <span class="text-[13px] whitespace-nowrap" style="color: var(--vp-c-text-2);">分区大小</span>
-        <el-input-number
-          v-if="sizeInPages"
-          v-model="targetSizePages"
-          :min="3" :step="1"
-          size="small" style="width: 120px;"
-        />
-        <el-input-number
-          v-else
-          v-model="targetSizeKB"
-          :min="12" :step="4"
-          size="small" style="width: 120px;"
-        />
-        <span class="text-[13px] whitespace-nowrap cursor-pointer underline underline-offset-[3px] nvs-stats-unit" style="color: var(--vp-c-text-2);" @click="sizeInPages = !sizeInPages" title="点击切换单位">
-          {{ sizeInPages ? '页' : 'KB' }}
-        </span>
-        <span class="text-[13px] whitespace-nowrap" style="color: var(--vp-c-text-3);">
-          ({{ sizeInPages ? targetSizePages * 4 + ' KB' : targetSizePages + ' 页' }})
-        </span>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span class="text-[13px] whitespace-nowrap" style="color: var(--vp-c-text-2);">IDF 版本</span>
-          <el-select
-            :model-value="partition.version"
-            size="small"
-            style="width: 160px;"
-            @change="handleVersionChange"
-          >
-            <el-option :value="NvsVersion.V2" label="IDF v4.0+ (V2)" />
-            <el-option :value="NvsVersion.V1" label="IDF < v4.0 (V1)" />
-          </el-select>
-        </div>
-      </div>
-      <div class="flex items-center gap-2">
-        <el-progress
-          :percentage="flashStats.usagePercent"
-          :color="progressColor"
-          :stroke-width="12"
-          :show-text="false"
-          style="width: 160px;"
-        />
-        <span class="text-[13px] whitespace-nowrap">
-          {{ flashStats.usedEntries }} / {{ flashStats.maxEntries }} 条目
-        </span>
-        <span class="text-[13px] whitespace-nowrap" style="color: var(--vp-c-text-3);">
-          ({{ flashStats.usagePercent.toFixed(1) }}%)
-        </span>
-      </div>
-    </div>
-
-    <!-- ── Toolbar ── -->
-    <div class="flex flex-wrap items-center gap-2 mb-3">
-      <el-button type="danger" plain @click="handleClear">清空</el-button>
-      <el-divider direction="vertical" />
-      <el-button
-        :type="showHex ? 'warning' : ''"
-        :plain="!showHex"
-        size="small"
-        @click="showHex = !showHex"
-        title="切换十六进制显示命名空间"
-      >HEX 命名空间</el-button>
-    </div>
-
-    <!-- ── Filter bar ── -->
-    <div class="flex flex-wrap items-center gap-2 mb-2">
-      <el-select v-model="namespaceFilter" placeholder="全部命名空间" clearable style="width: 180px;" size="small">
-        <el-option v-for="ns in partition.namespaces" :key="ns" :label="displayNamespace(ns)" :value="ns" />
-      </el-select>
-      <el-input v-model="keySearch" placeholder="搜索键名..." clearable style="width: 200px;" size="small" />
-      <span class="text-sm" style="color: var(--vp-c-text-3);">{{ filteredEntries.length }} 条</span>
-    </div>
-
-    <!-- ── Table + add row (scrollable on small screens) ── -->
-    <div class="overflow-x-auto min-w-0">
-    <!-- ── Inline add row (small/medium screens) ── -->
-    <div class="nvs-add-inline flex items-center gap-1.5 px-2.5 py-2" style="background: var(--vp-c-bg-soft); border: 1px solid var(--vp-c-divider); border-bottom: none; border-radius: 6px 6px 0 0;">
-      <el-select
-        v-model="newRow.namespace"
-        filterable
-        allow-create
-        placeholder="命名空间"
-        size="small"
-        style="width: 150px;"
-        @keyup.enter="handleInlineAddEntry"
-      >
-        <el-option v-for="ns in partition.namespaces" :key="ns" :value="ns" :label="ns" />
-      </el-select>
-      <el-input
-        v-model="newRow.key"
-        placeholder="键名 (支持 \xHH)"
-        size="small"
-        style="width: 170px;"
-        @keyup.enter="handleInlineAddEntry"
-      />
-      <el-select v-model="newRow.encoding" size="small" style="width: 100px;">
-        <el-option v-for="enc in encodingOptions" :key="enc" :value="enc" :label="enc" />
-      </el-select>
-      <el-input
-        v-model="newRow.value"
-        placeholder="值"
-        size="small"
-        style="flex: 1; min-width: 100px;"
-        @keyup.enter="handleInlineAddEntry"
-      />
-      <el-button type="primary" :icon="Plus" size="small" @click="handleInlineAddEntry" title="添加记录" />
-    </div>
-
-    <!-- ── Data table ── -->
-    <el-table
-      :data="filteredEntries"
-      stripe
-      size="small"
-      row-key="id"
-      empty-text="暂无记录，请在上方添加或导入数据"
-      max-height="600"
-      @sort-change="handleSortChange"
-      class="nvs-table"
-    >
-      <!-- Key -->
-      <el-table-column prop="key" label="键名" width="170" sortable="custom" fixed="left">
-        <template #default="{ row }">
-          <div class="flex items-center gap-1 w-full">
-            <el-icon v-if="hasNonPrintable(row.key)" class="shrink-0 w-3.5 h-3.5 text-[#E6A23C]" title="含非打印字节"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg></el-icon>
-            <el-input
-              :model-value="formatEscapes(row.key)"
-              size="small"
-              style="flex: 1; min-width: 0;"
-              placeholder="支持 \xHH 转义"
-              @change="(val: string) => handleUpdateKey(row.id, parseEscapes(val))"
-            />
+    <!-- ── Stats and Configuration Card ── -->
+    <el-card shadow="never" class="mb-4 nvs-stats-card">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="flex items-center flex-wrap gap-4">
+          <div class="stat-item">
+            <span class="stat-label">分区大小</span>
+            <div class="flex items-center gap-2 mt-1">
+              <el-input-number
+                v-if="sizeInPages"
+                v-model="targetSizePages"
+                :min="3" :step="1"
+                size="small" style="width: 120px;"
+              />
+              <el-input-number
+                v-else
+                v-model="targetSizeKB"
+                :min="12" :step="4"
+                size="small" style="width: 120px;"
+              />
+              <span class="text-[13px] cursor-pointer underline underline-offset-[3px] nvs-stats-unit" style="color: var(--vp-c-text-2);" @click="sizeInPages = !sizeInPages" title="点击切换单位">
+                {{ sizeInPages ? '页' : 'KB' }}
+              </span>
+              <span class="text-[13px]" style="color: var(--vp-c-text-3);">
+                ({{ sizeInPages ? targetSizePages * 4 + ' KB' : targetSizePages + ' 页' }})
+              </span>
+            </div>
           </div>
-        </template>
-      </el-table-column>
-
-      <!-- Value -->
-      <el-table-column label="值" min-width="160">
-        <template #default="{ row }">
-          <div class="flex items-center gap-1 w-full">
-            <!-- Primitive -->
-            <el-input
-              v-if="isPrimitiveType(row.type)"
-              :model-value="String(row.value)"
-              size="small"
-              style="flex: 1; min-width: 0;"
-              @change="(val: string) => handleUpdateValue(row.id, getEncodingForType(row.type), val)"
-            />
-            <!-- String -->
-            <el-input
-              v-else-if="row.type === NvsType.SZ"
-              :model-value="formatEscapes(row.value as string)"
-              size="small"
-              type="textarea"
-              :autosize="{ minRows: 1, maxRows: 3 }"
-              style="flex: 1; min-width: 0;"
-              placeholder="支持 \xHH 转义"
-              @change="(val: string) => handleUpdateValue(row.id, 'string', val)"
-            />
-            <!-- Blob -->
-            <template v-else>
-              <el-text size="small" class="flex-1 min-w-0 font-mono" truncated>{{ formatValue(row) }}</el-text>
-            </template>
-          </div>
-        </template>
-      </el-table-column>
-
-      <!-- Type -->
-      <el-table-column label="类型" width="100">
-        <template #default="{ row }">
-          <el-select
-            :model-value="getEncodingForType(row.type)"
-            size="small"
-            @change="(val: NvsEncoding) => handleUpdateEncoding(row.id, val)"
-          >
-            <el-option v-for="enc in encodingOptions" :key="enc" :label="enc" :value="enc" />
-          </el-select>
-        </template>
-      </el-table-column>
-
-      <!-- Namespace -->
-      <el-table-column prop="namespace" label="命名空间" width="150" sortable="custom">
-        <template #default="{ row }">
-          <div class="flex items-center gap-1 w-full">
-            <el-icon v-if="hasNonPrintable(row.namespace)" class="shrink-0 w-3.5 h-3.5 text-[#E6A23C]" title="含非打印字节"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg></el-icon>
-            <el-tooltip :content="displayNamespace(row.namespace)" placement="top" :show-after="300">
+          
+          <el-divider direction="vertical" class="hidden sm:block h-8" />
+          
+          <div class="stat-item">
+            <span class="stat-label">IDF 版本</span>
+            <div class="mt-1">
               <el-select
-                :model-value="row.namespace"
+                :model-value="partition.version"
                 size="small"
-                style="flex: 1; min-width: 0;"
-                @change="(val: string) => handleUpdateNamespace(row.id, val)"
+                style="width: 160px;"
+                @change="handleVersionChange"
               >
-                <el-option v-for="ns in partition.namespaces" :key="ns" :label="displayNamespace(ns)" :value="ns" />
+                <el-option :value="NvsVersion.V2" label="IDF v4.0+ (V2)" />
+                <el-option :value="NvsVersion.V1" label="IDF < v4.0 (V1)" />
               </el-select>
-            </el-tooltip>
+            </div>
           </div>
-        </template>
-      </el-table-column>
-
-      <!-- Actions -->
-      <el-table-column label="操作" width="115" fixed="right">
-        <template #default="{ row }">
-          <div class="nvs-actions flex items-center gap-px flex-nowrap">
-            <el-button
-              size="small"
-              :icon="Upload"
-              title="上传文件"
-              @click="blobUploadEntryId = row.id; blobUploadInput?.click()"
-            />
-            <el-button
-              size="small"
-              :icon="View"
-              title="查看完整值"
-              @click="valueDialogEntry = row; showValueDialog = true"
-            />
-            <el-button
-              size="small"
-              :icon="CopyDocument"
-              title="复制记录"
-              @click="handleDuplicateEntry(row.id)"
-            />
-            <el-popconfirm title="确定删除?" @confirm="handleDeleteEntry(row.id)">
-              <template #reference>
-                <el-button size="small" :icon="Delete" type="danger" title="删除" />
-              </template>
-            </el-popconfirm>
+        </div>
+        
+        <div class="stat-item progress-item">
+          <div class="flex justify-between w-full mb-1">
+            <span class="stat-label">空间使用率</span>
+            <span class="text-[12px]" style="color: var(--vp-c-text-2);">
+              {{ flashStats.usedEntries }} / {{ flashStats.maxEntries }} 条目
+            </span>
           </div>
-        </template>
-      </el-table-column>
-    </el-table>
-    </div><!-- end nvs-table-wrap -->
+          <el-progress
+            :percentage="flashStats.usagePercent"
+            :color="progressColor"
+            :stroke-width="10"
+            class="nvs-progress"
+          >
+            <span class="text-[12px] ml-2 font-medium">{{ flashStats.usagePercent.toFixed(1) }}%</span>
+          </el-progress>
+        </div>
+      </div>
+    </el-card>
 
-    <!-- ── Import / Export ── -->
-    <el-divider />
-    <div class="flex flex-wrap items-center gap-2.5">
-      <div class="flex flex-col items-start gap-1.5">
-        <span class="text-[13px] font-semibold whitespace-nowrap" style="color: var(--vp-c-text-1);">二进制文件 (.bin)</span>
-        <div class="nvs-io-buttons flex flex-wrap gap-1.5">
-          <el-button size="small" @click="openBinInput?.click()">打开</el-button>
-          <el-button size="small" type="primary" @click="handleExportBinary">导出</el-button>
-          <el-button size="small" @click="mergeBinInput?.click()">合并</el-button>
-        </div>
+    <!-- ── Main Action Toolbar ── -->
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <div class="flex items-center gap-3">
+        <el-button type="danger" plain :icon="Delete" @click="handleClear">清空数据</el-button>
+        <el-checkbox v-model="showHex" border>HEX 模式</el-checkbox>
       </div>
-      <div class="flex flex-col items-start gap-1.5">
-        <span class="text-[13px] font-semibold whitespace-nowrap" style="color: var(--vp-c-text-1);">CSV 文件 (.csv)</span>
-        <div class="nvs-io-buttons flex flex-wrap gap-1.5">
-          <el-button size="small" @click="openCsvInput?.click()">打开</el-button>
-          <el-button size="small" type="primary" @click="handleExportCsv">导出</el-button>
-          <el-button size="small" @click="mergeCsvInput?.click()">合并</el-button>
-        </div>
-      </div>
-      <div class="flex flex-col items-start gap-1.5">
-        <span class="text-[13px] font-semibold whitespace-nowrap" style="color: var(--vp-c-text-1);">JSON 文件 (.json)</span>
-        <div class="nvs-io-buttons flex flex-wrap gap-1.5">
-          <el-button size="small" @click="openJsonInput?.click()">打开</el-button>
-          <el-button size="small" type="primary" @click="handleExportJson">导出</el-button>
-          <el-button size="small" @click="mergeJsonInput?.click()">合并</el-button>
-        </div>
-      </div>
-      <div class="flex flex-col items-start gap-1.5">
-        <span class="text-[13px] font-semibold whitespace-nowrap" style="color: var(--vp-c-text-1);">合并策略</span>
-        <el-radio-group v-model="mergeMode" size="small">
-          <el-radio value="overwrite">覆盖同名键</el-radio>
-          <el-radio value="skip">跳过同名键</el-radio>
-        </el-radio-group>
+      
+      <div class="flex flex-wrap items-center gap-3">
+        <!-- Filter Area -->
+        <el-select v-model="namespaceFilter" placeholder="全部命名空间" clearable style="width: 150px;">
+          <el-option v-for="ns in partition.namespaces" :key="ns" :label="displayStr(ns)" :value="ns" />
+        </el-select>
+        <el-input v-model="searchQuery" placeholder="搜索键名/值..." clearable :prefix-icon="Search" style="width: 180px;" />
+        
+        <el-divider direction="vertical" />
+        
+        <!-- Import / Export -->
+        <el-dropdown trigger="click">
+          <el-button type="primary" plain :icon="FolderOpened">
+            导入 <el-icon class="el-icon--right"><arrow-down /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <div class="px-3 py-2 border-b border-gray-100 flex flex-col gap-1 bg-gray-50">
+                <span class="text-xs text-gray-500 font-semibold">合并策略</span>
+                <el-radio-group v-model="mergeMode" size="small">
+                  <el-radio value="overwrite">覆盖同名</el-radio>
+                  <el-radio value="skip">跳过同名</el-radio>
+                </el-radio-group>
+              </div>
+              <el-dropdown-item @click="openBinInput?.click()">打开 BIN (.bin)</el-dropdown-item>
+              <el-dropdown-item @click="mergeBinInput?.click()">合并 BIN (.bin)</el-dropdown-item>
+              <el-dropdown-item @click="openCsvInput?.click()" divided>打开 CSV (.csv)</el-dropdown-item>
+              <el-dropdown-item @click="mergeCsvInput?.click()">合并 CSV (.csv)</el-dropdown-item>
+              <el-dropdown-item @click="openJsonInput?.click()" divided>打开 JSON (.json)</el-dropdown-item>
+              <el-dropdown-item @click="mergeJsonInput?.click()">合并 JSON (.json)</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+
+        <el-dropdown trigger="click">
+          <el-button type="primary" :icon="Download">
+            导出 <el-icon class="el-icon--right"><arrow-down /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item @click="handleExportBinary">导出为 BIN</el-dropdown-item>
+              <el-dropdown-item @click="handleExportCsv">导出为 CSV</el-dropdown-item>
+              <el-dropdown-item @click="handleExportJson">导出为 JSON</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </div>
-    </div><!-- end nvs-editor-main -->
 
-    <!-- ── Right sidebar: add form (large screens) ── -->
-    <div class="nvs-add-sidebar">
-      <div class="nvs-add-form">
-        <span class="nvs-add-form-title">添加记录</span>
+    <!-- ── Data Table Card ── -->
+    <el-card shadow="never" class="nvs-table-card" :body-style="{ padding: '0px' }">
+      <div class="flex items-center justify-between px-4 py-3 bg-gray-50 border-b nvs-card-header">
+        <span class="text-[14px] font-semibold text-gray-700">数据列表 <span class="font-normal text-gray-500 ml-1">({{ filteredEntries.length }} 条)</span></span>
+      </div>
+
+      <!-- Inline Add Row -->
+      <div class="nvs-add-inline grid grid-cols-1 sm:grid-cols-[150px_1fr_120px_1fr_auto] gap-2 px-4 py-3 border-b" style="background: var(--vp-c-bg-soft);">
         <el-select
           v-model="newRow.namespace"
           filterable
           allow-create
           placeholder="命名空间"
-          size="small"
           @keyup.enter="handleInlineAddEntry"
         >
-          <el-option v-for="ns in partition.namespaces" :key="ns" :value="ns" :label="ns" />
+          <el-option v-for="ns in partition.namespaces" :key="ns" :value="ns" :label="displayStr(ns)" />
         </el-select>
         <el-input
           v-model="newRow.key"
-          placeholder="键名 (支持 \xHH)"
-          size="small"
+          placeholder="新键名 (支持 \xHH)"
           @keyup.enter="handleInlineAddEntry"
         />
-        <el-select v-model="newRow.encoding" size="small">
+        <el-select v-model="newRow.encoding">
           <el-option v-for="enc in encodingOptions" :key="enc" :value="enc" :label="enc" />
         </el-select>
         <el-input
+          v-if="newRow.encoding === 'string'"
+          v-model="newRow.value"
+          type="textarea"
+          :autosize="{ minRows: 1, maxRows: 3 }"
+          placeholder="值 (支持 \\xHH 转义)"
+        />
+        <el-input
+          v-else
           v-model="newRow.value"
           placeholder="值"
-          size="small"
-          type="textarea"
-          :autosize="{ minRows: 1, maxRows: 4 }"
           @keyup.enter="handleInlineAddEntry"
         />
-        <el-button type="primary" :icon="Plus" @click="handleInlineAddEntry">添加</el-button>
+        <el-button type="primary" :icon="Plus" @click="handleInlineAddEntry" title="添加记录">添加</el-button>
       </div>
-    </div>
-    </div><!-- end nvs-editor-layout -->
+
+      <!-- Data table -->
+      <el-table
+        :data="filteredEntries"
+        stripe
+        row-key="id"
+        empty-text="暂无记录，请在上方添加或导入数据"
+        max-height="600"
+        @sort-change="handleSortChange"
+        class="w-full"
+      >
+        <!-- Key -->
+        <el-table-column prop="key" label="键名" min-width="120" sortable="custom" fixed="left">
+          <template #default="{ row }">
+            <div :class="['flex items-center gap-2 w-full', { 'nvs-cell-error': entryErrors.has(row.id) }]">
+              <el-icon v-if="hasNonPrintable(row.key)" class="shrink-0 text-warning" title="含非打印字节"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg></el-icon>
+              <el-input
+                :model-value="editingCells.get(row.id + ':key') ?? (showHex ? displayHexLatin1(row.key) : formatEscapes(row.key))"
+                class="nvs-seamless-input"
+                :placeholder="showHex ? '' : '支持 \\xHH'"
+                :readonly="showHex"
+                @focus="!showHex && editingCells.set(row.id + ':key', formatEscapes(row.key))"
+                @input="(val: string) => editingCells.set(row.id + ':key', val)"
+                @keyup.enter="commitEdit(row.id, 'key')"
+                @keyup.escape="cancelEdit(row.id, 'key')"
+                @blur="commitEdit(row.id, 'key')"
+              />
+            </div>
+          </template>
+        </el-table-column>
+
+        <!-- Value -->
+        <el-table-column prop="value" label="值" min-width="200" sortable="custom">
+          <template #default="{ row }">
+            <div :class="['flex items-center gap-1 w-full', { 'nvs-cell-error': entryErrors.has(row.id) }]">
+              <!-- Primitive -->
+              <el-input
+                v-if="isPrimitiveType(row.type)"
+                :model-value="editingCells.get(row.id + ':value') ?? (showHex ? formatValueHex(row) : String(row.value))"
+                class="nvs-seamless-input"
+                :readonly="showHex"
+                @focus="!showHex && editingCells.set(row.id + ':value', String(row.value))"
+                @input="(val: string) => editingCells.set(row.id + ':value', val)"
+                @keyup.enter="commitEdit(row.id, 'value')"
+                @keyup.escape="cancelEdit(row.id, 'value')"
+                @blur="commitEdit(row.id, 'value')"
+              />
+              <!-- String -->
+              <el-input
+                v-else-if="row.type === NvsType.SZ"
+                :model-value="editingCells.get(row.id + ':value') ?? (showHex ? displayHex(row.value as string) : formatEscapes(row.value as string))"
+                type="textarea"
+                :autosize="{ minRows: 1, maxRows: 3 }"
+                class="nvs-seamless-input"
+                :placeholder="showHex ? '' : '支持 \\xHH 转义'"
+                :readonly="showHex"
+                @focus="!showHex && editingCells.set(row.id + ':value', formatEscapes(row.value as string))"
+                @input="(val: string) => editingCells.set(row.id + ':value', val)"
+                @keyup.escape="cancelEdit(row.id, 'value')"
+                @blur="commitEdit(row.id, 'value')"
+              />
+              <!-- Blob -->
+              <el-input
+                v-else
+                :model-value="editingCells.get(row.id + ':value') ?? formatValue(row)"
+                class="nvs-seamless-input"
+                placeholder="十六进制 (如: 48 65 6C 6C 6F)"
+                @focus="editingCells.set(row.id + ':value', blobToHex(row.value as Uint8Array))"
+                @input="(val: string) => editingCells.set(row.id + ':value', val)"
+                @keyup.enter="commitEdit(row.id, 'value')"
+                @keyup.escape="cancelEdit(row.id, 'value')"
+                @blur="commitEdit(row.id, 'value')"
+              />
+            </div>
+          </template>
+        </el-table-column>
+
+        <!-- Type -->
+        <el-table-column label="类型" width="130">
+          <template #default="{ row }">
+            <div :class="{ 'nvs-cell-error': entryErrors.has(row.id) }">
+            <el-select
+              :model-value="getEncodingForType(row.type)"
+              class="nvs-seamless-select"
+              @change="(val: NvsEncoding) => handleUpdateEncoding(row.id, val)"
+            >
+              <el-option v-for="enc in encodingOptions" :key="enc" :label="enc" :value="enc" />
+            </el-select>
+            </div>
+          </template>
+        </el-table-column>
+
+        <!-- Namespace -->
+        <el-table-column prop="namespace" label="命名空间" width="180" sortable="custom">
+          <template #default="{ row }">
+            <div :class="['flex items-center gap-2 w-full', { 'nvs-cell-error': entryErrors.has(row.id) }]">
+              <el-icon v-if="hasNonPrintable(row.namespace)" class="shrink-0 text-warning" title="含非打印字节"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg></el-icon>
+              <el-tooltip :content="displayStr(row.namespace)" placement="top" :show-after="300">
+                <el-select
+                  :model-value="row.namespace"
+                  class="nvs-seamless-select"
+                  @change="(val: string) => handleUpdateNamespace(row.id, val)"
+                >
+                  <el-option v-for="ns in partition.namespaces" :key="ns" :label="displayStr(ns)" :value="ns" />
+                </el-select>
+              </el-tooltip>
+            </div>
+          </template>
+        </el-table-column>
+
+        <!-- Actions -->
+        <el-table-column label="操作" :width="isSmallScreen ? 60 : 130" fixed="right">
+          <template #default="{ row }">
+            <!-- Desktop: compact icon buttons -->
+            <div class="nvs-actions-desktop flex items-center">
+              <el-button type="primary" link size="small" :icon="Upload" @click="blobUploadEntryId = row.id; blobUploadInput?.click()" title="上传文件" />
+              <el-button type="primary" link size="small" :icon="Document" @click="valueDialogEntry = row; showValueDialog = true" title="查看完整值" />
+              <el-button type="primary" link size="small" :icon="CopyDocument" @click="handleDuplicateEntry(row.id)" title="复制记录" />
+              <el-popconfirm title="确定删除此记录?" @confirm="handleDeleteEntry(row.id)">
+                <template #reference>
+                  <el-button type="danger" link size="small" :icon="Delete" title="删除" />
+                </template>
+              </el-popconfirm>
+            </div>
+            <!-- Mobile: dropdown menu -->
+            <div class="nvs-actions-mobile">
+              <el-dropdown trigger="click">
+                <el-button type="primary" link :icon="MoreFilled" />
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item @click="blobUploadEntryId = row.id; blobUploadInput?.click()">上传文件</el-dropdown-item>
+                    <el-dropdown-item @click="valueDialogEntry = row; showValueDialog = true">查看完整值</el-dropdown-item>
+                    <el-dropdown-item @click="handleDuplicateEntry(row.id)">复制记录</el-dropdown-item>
+                    <el-dropdown-item divided @click="ElMessageBox.confirm('确定删除此记录?', '确认', { type: 'warning' }).then(() => handleDeleteEntry(row.id)).catch(() => {})">删除</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
 
     <!-- ── Value viewer dialog ── -->
     <el-dialog
       v-model="showValueDialog"
       :title="`值查看器 — ${valueDialogEntry?.namespace} / ${valueDialogEntry?.key}`"
       width="640px"
+      destroy-on-close
     >
       <pre class="nvs-value-viewer">{{ valueDialogEntry ? fullValueText(valueDialogEntry) : '' }}</pre>
       <template #footer>
-        <el-button @click="copyToClipboard(valueDialogEntry ? fullValueText(valueDialogEntry) : '')">复制</el-button>
-        <el-button type="primary" @click="showValueDialog = false">关闭</el-button>
+        <span class="dialog-footer">
+          <el-button @click="copyToClipboard(valueDialogEntry ? fullValueText(valueDialogEntry) : '')">复制内容</el-button>
+          <el-button type="primary" @click="showValueDialog = false">关闭</el-button>
+        </span>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
+.nvs-editor-container {
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+.nvs-stats-card :deep(.el-card__body) {
+  padding: 16px 20px;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vp-c-text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.progress-item {
+  min-width: 200px;
+  flex: 1;
+  max-width: 400px;
+}
+
+.nvs-progress :deep(.el-progress-bar__outer) {
+  background-color: var(--vp-c-bg-soft);
+}
+
 .nvs-stats-unit:hover {
   color: var(--vp-c-brand);
 }
 
-@media (min-width: 1200px) {
-  .nvs-add-inline {
-    display: none;
-  }
+.nvs-table-card {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--vp-c-divider);
 }
 
-/* Table */
-.nvs-table {
-  border-radius: 0 0 6px 6px;
-}
-@media (min-width: 1200px) {
-  .nvs-table {
-    border-radius: 6px;
-  }
-}
-.nvs-table :deep(td.el-table__cell),
-.nvs-table :deep(th.el-table__cell) {
-  border-right: none;
-  border-bottom: none;
-}
-.nvs-table :deep(.el-table__inner-wrapper::before) {
-  display: none;
+.nvs-card-header {
+  background-color: var(--vp-c-bg-soft);
+  border-bottom: 1px solid var(--vp-c-divider);
 }
 
-/* Action buttons row */
-.nvs-actions > * {
-  flex-shrink: 0;
-  margin: 0 !important;
-}
-.nvs-actions :deep(.el-button) {
-  --el-button-size: 24px;
-  padding: 4px;
+/* Seamless Inputs for Table */
+.nvs-seamless-input :deep(.el-input__wrapper),
+.nvs-seamless-select :deep(.el-input__wrapper),
+.nvs-seamless-input :deep(.el-textarea__inner) {
+  box-shadow: none !important;
+  background-color: transparent;
+  padding: 0 8px;
 }
 
-.nvs-io-buttons :deep(.el-button),
-.nvs-io-buttons :deep(.el-tag) {
-  margin-left: 0;
+.nvs-seamless-input :deep(.el-input__wrapper:hover),
+.nvs-seamless-select :deep(.el-input__wrapper:hover),
+.nvs-seamless-input :deep(.el-textarea__inner:hover),
+.nvs-seamless-input :deep(.el-input__wrapper.is-focus),
+.nvs-seamless-select :deep(.el-input__wrapper.is-focus),
+.nvs-seamless-input :deep(.el-textarea__inner:focus) {
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset !important;
+  background-color: var(--vp-c-bg);
+  border-radius: 4px;
 }
 
 /* Value viewer */
 .nvs-value-viewer {
-  font-family: 'Courier New', Courier, monospace;
-  font-size: 12px;
-  line-height: 1.6;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  font-size: 13px;
+  line-height: 1.5;
   overflow: auto;
   max-height: 400px;
   background: var(--vp-c-bg-soft);
   border: 1px solid var(--vp-c-divider);
   border-radius: 6px;
-  padding: 12px;
+  padding: 16px;
   margin: 0;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-all;
   color: var(--vp-c-text-1);
 }
 
-/* Responsive editor layout */
-.nvs-editor-layout {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
+/* Dark mode overrides and utility classes mapping */
+.bg-gray-50 {
+  background-color: var(--vp-c-bg-soft);
 }
-.nvs-editor-main {
-  flex: 1;
-  min-width: 0;
+.border-b {
+  border-bottom: 1px solid var(--vp-c-divider);
 }
-.nvs-add-sidebar {
-  width: 260px;
-  flex-shrink: 0;
-  position: sticky;
-  top: calc(var(--vp-nav-height, 64px) + 16px);
+.text-gray-500 {
+  color: var(--vp-c-text-2);
 }
-.nvs-add-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  background: var(--vp-c-bg-soft);
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 8px;
-}
-.nvs-add-form-title {
-  font-size: 14px;
-  font-weight: 600;
+.text-gray-700 {
   color: var(--vp-c-text-1);
 }
-@media (max-width: 1199px) {
-  .nvs-editor-layout {
-    display: block;
+.border-gray-100 {
+  border-color: var(--vp-c-divider);
+}
+.text-warning {
+  color: #E6A23C;
+}
+
+/* Error highlighting for validation conflicts */
+.nvs-cell-error :deep(.el-input__wrapper),
+.nvs-cell-error :deep(.el-select .el-input__wrapper),
+.nvs-cell-error :deep(.el-textarea__inner) {
+  background-color: rgba(245, 108, 108, 0.1) !important;
+}
+
+/* Responsive action buttons */
+.nvs-actions-mobile { display: none; }
+
+@media (max-width: 640px) {
+  .nvs-add-inline {
+    grid-template-columns: 1fr;
   }
-  .nvs-add-sidebar {
-    display: none;
-  }
+  .nvs-actions-desktop { display: none; }
+  .nvs-actions-mobile { display: block; }
 }
 </style>
