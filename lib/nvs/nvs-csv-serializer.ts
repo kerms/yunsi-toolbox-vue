@@ -25,9 +25,13 @@ function escapeCsvField(value: string): string {
 export function serializeCsv(partition: NvsPartition): string {
   const lines: string[] = ['key,type,encoding,value'];
 
+  // Derive used namespaces from entries (ignores orphaned namespaces)
+  const usedNs = new Set(partition.entries.map(e => e.namespace));
+  const namespaces = partition.namespaces.filter(ns => usedNs.has(ns));
+
   // Group entries by namespace
   const grouped = new Map<string, typeof partition.entries>();
-  for (const ns of partition.namespaces) {
+  for (const ns of namespaces) {
     grouped.set(ns, []);
   }
   for (const entry of partition.entries) {

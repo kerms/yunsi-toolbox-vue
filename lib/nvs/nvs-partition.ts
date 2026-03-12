@@ -55,14 +55,13 @@ export function updateEntry(
   const entries = partition.entries.map(e =>
     e.id === entryId ? { ...e, ...updates } : e,
   );
-  // If namespace changed, ensure it's in the list
+  // If namespace changed, add it. Intentionally does NOT remove the old namespace:
+  // partition.namespaces doubles as a UI dropdown convenience list; orphaned entries
+  // are silently filtered out at serialization/validation/restore boundaries.
   let namespaces = partition.namespaces;
   if (updates.namespace && !namespaces.includes(updates.namespace)) {
     namespaces = [...namespaces, updates.namespace];
   }
-  // Clean up unused namespaces
-  const usedNs = new Set(entries.map(e => e.namespace));
-  namespaces = namespaces.filter(ns => usedNs.has(ns));
   return { ...partition, entries, namespaces };
 }
 
@@ -153,8 +152,11 @@ export function calculateFlashStats(
   const maxEntries = usablePages * ENTRIES_PER_PAGE;
 
   // Build a flat list of entry spans (namespace defs + data entries)
+  // Derive used namespaces from entries (ignores orphaned namespaces)
+  const usedNs = new Set(partition.entries.map(e => e.namespace));
+  const activeNs = partition.namespaces.filter(ns => usedNs.has(ns));
   const spans: number[] = [];
-  for (const _ns of partition.namespaces) spans.push(1);
+  for (const _ns of activeNs) spans.push(1);
   for (const entry of partition.entries) spans.push(entrySpan(entry, partition.version));
 
   // Simulate page-packing to count actual slot consumption (including fragmentation waste).
@@ -186,38 +188,50 @@ export function calculateFlashStats(
   };
 }
 
-/** Validate partition data. Returns array of error messages (empty = valid). */
-export function validatePartition(partition: NvsPartition): string[] {
-  const errors: string[] = [];
+/** Structured validation error with optional entry ID for precise highlighting. */
+export interface ValidationError {
+  message: string;
+  /** Entry ID that caused the error, undefined for partition-level errors. */
+  entryId?: string;
+}
 
-  if (partition.namespaces.length > MAX_NAMESPACES) {
-    errors.push(`Namespace count exceeds limit ${MAX_NAMESPACES}`);
+/** Validate partition data. Returns array of validation errors (empty = valid). */
+export function validatePartition(partition: NvsPartition): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  // Derive active namespaces from entries (ignore orphaned namespaces left by updateEntry)
+  const usedNs = new Set(partition.entries.map(e => e.namespace));
+  const activeNs = partition.namespaces.filter(ns => usedNs.has(ns));
+
+  if (activeNs.length > MAX_NAMESPACES) {
+    errors.push({ message: `Namespace count exceeds limit ${MAX_NAMESPACES}` });
   }
 
-  for (const ns of partition.namespaces) {
+  for (const ns of activeNs) {
     if (ns.length === 0) {
-      errors.push('Namespace name cannot be empty');
+      errors.push({ message: 'Namespace name cannot be empty' });
     }
     if (ns.length > MAX_KEY_LENGTH) {
-      errors.push(`Namespace "${ns}" exceeds ${MAX_KEY_LENGTH} characters`);
+      errors.push({ message: `Namespace "${ns}" exceeds ${MAX_KEY_LENGTH} characters` });
     }
     if ([...ns].some(c => c.charCodeAt(0) > 0xFF)) {
-      errors.push(`Namespace "${ns}" contains non-Latin-1 characters (binary format only supports 8-bit characters)`);
+      errors.push({ message: `Namespace "${ns}" contains non-Latin-1 characters (binary format only supports 8-bit characters)` });
     }
   }
 
   for (const entry of partition.entries) {
+    const eid = entry.id;
     if (entry.key.length === 0) {
-      errors.push(`Empty key in namespace "${entry.namespace}"`);
+      errors.push({ message: `Empty key in namespace "${entry.namespace}"`, entryId: eid });
     }
     if (entry.key.length > MAX_KEY_LENGTH) {
-      errors.push(`Key "${entry.key}" exceeds ${MAX_KEY_LENGTH} characters`);
+      errors.push({ message: `Key "${entry.key}" exceeds ${MAX_KEY_LENGTH} characters`, entryId: eid });
     }
     if ([...entry.key].some(c => c.charCodeAt(0) > 0xFF)) {
-      errors.push(`Key "${entry.key}" contains non-Latin-1 characters (binary format only supports 8-bit characters)`);
+      errors.push({ message: `Key "${entry.key}" contains non-Latin-1 characters`, entryId: eid });
     }
     if (!partition.namespaces.includes(entry.namespace)) {
-      errors.push(`Key "${entry.key}" references unregistered namespace "${entry.namespace}"`);
+      errors.push({ message: `Key "${entry.key}" references unregistered namespace "${entry.namespace}"`, entryId: eid });
     }
 
     // Validate value ranges for primitive types
@@ -225,21 +239,21 @@ export function validatePartition(partition: NvsPartition): string[] {
       if (typeof entry.value === 'number') {
         const v = entry.value;
         switch (entry.type) {
-          case NvsType.U8:  if (v < 0 || v > 0xFF) errors.push(`"${entry.key}" U8 value out of range`); break;
-          case NvsType.I8:  if (v < -128 || v > 127) errors.push(`"${entry.key}" I8 value out of range`); break;
-          case NvsType.U16: if (v < 0 || v > 0xFFFF) errors.push(`"${entry.key}" U16 value out of range`); break;
-          case NvsType.I16: if (v < -32768 || v > 32767) errors.push(`"${entry.key}" I16 value out of range`); break;
-          case NvsType.U32: if (v < 0 || v > 0xFFFFFFFF) errors.push(`"${entry.key}" U32 value out of range`); break;
-          case NvsType.I32: if (v < -2147483648 || v > 2147483647) errors.push(`"${entry.key}" I32 value out of range`); break;
+          case NvsType.U8:  if (v < 0 || v > 0xFF) errors.push({ message: `"${entry.key}" U8 value out of range`, entryId: eid }); break;
+          case NvsType.I8:  if (v < -128 || v > 127) errors.push({ message: `"${entry.key}" I8 value out of range`, entryId: eid }); break;
+          case NvsType.U16: if (v < 0 || v > 0xFFFF) errors.push({ message: `"${entry.key}" U16 value out of range`, entryId: eid }); break;
+          case NvsType.I16: if (v < -32768 || v > 32767) errors.push({ message: `"${entry.key}" I16 value out of range`, entryId: eid }); break;
+          case NvsType.U32: if (v < 0 || v > 0xFFFFFFFF) errors.push({ message: `"${entry.key}" U32 value out of range`, entryId: eid }); break;
+          case NvsType.I32: if (v < -2147483648 || v > 2147483647) errors.push({ message: `"${entry.key}" I32 value out of range`, entryId: eid }); break;
         }
       } else if (typeof entry.value === 'bigint') {
         const v = entry.value;
         switch (entry.type) {
           case NvsType.U64:
-            if (v < 0n || v > 0xFFFFFFFFFFFFFFFFn) errors.push(`"${entry.key}" U64 value out of range`);
+            if (v < 0n || v > 0xFFFFFFFFFFFFFFFFn) errors.push({ message: `"${entry.key}" U64 value out of range`, entryId: eid });
             break;
           case NvsType.I64:
-            if (v < -9223372036854775808n || v > 9223372036854775807n) errors.push(`"${entry.key}" I64 value out of range`);
+            if (v < -9223372036854775808n || v > 9223372036854775807n) errors.push({ message: `"${entry.key}" I64 value out of range`, entryId: eid });
             break;
         }
       }
@@ -249,45 +263,47 @@ export function validatePartition(partition: NvsPartition): string[] {
     if (entry.type === NvsType.SZ && typeof entry.value === 'string') {
       const byteLen = new TextEncoder().encode(entry.value).length;
       if (byteLen >= MAX_STRING_LENGTH) {
-        errors.push(`"${entry.key}" string length ${byteLen} bytes exceeds limit ${MAX_STRING_LENGTH - 1}`);
+        errors.push({ message: `"${entry.key}" string length ${byteLen} bytes exceeds limit ${MAX_STRING_LENGTH - 1}`, entryId: eid });
       }
     }
 
     // Validate blob size
-    // NvsType.BLOB uses the legacy V1 single-page format regardless of partition version,
-    // so it is always capped at MAX_BLOB_SIZE_V1.
-    // NvsType.BLOB_DATA uses the V2 chunked format and is capped at MAX_BLOB_SIZE_V2.
     if (entry.type === NvsType.BLOB && entry.value instanceof Uint8Array) {
       if (entry.value.length > MAX_BLOB_SIZE_V1) {
-        errors.push(`"${entry.key}" BLOB ${entry.value.length} bytes exceeds limit ${MAX_BLOB_SIZE_V1}`);
+        errors.push({ message: `"${entry.key}" BLOB ${entry.value.length} bytes exceeds limit ${MAX_BLOB_SIZE_V1}`, entryId: eid });
       }
     } else if (entry.type === NvsType.BLOB_DATA && entry.value instanceof Uint8Array) {
       if (entry.value.length > MAX_BLOB_SIZE_V2) {
-        errors.push(`"${entry.key}" BLOB ${entry.value.length} bytes exceeds V2 limit ${MAX_BLOB_SIZE_V2}`);
+        errors.push({ message: `"${entry.key}" BLOB ${entry.value.length} bytes exceeds V2 limit ${MAX_BLOB_SIZE_V2}`, entryId: eid });
       }
     }
 
-    // BLOB_IDX is an internal serializer type — it must never appear as a user entry.
     if (entry.type === NvsType.BLOB_IDX) {
-      errors.push(`"${entry.key}" has internal-only type BLOB_IDX (synthesized by serializer, not valid user input)`);
+      errors.push({ message: `"${entry.key}" has internal-only type BLOB_IDX`, entryId: eid });
     }
-    // Version/type consistency — prevents poisoned binaries.
     if (entry.type === NvsType.BLOB_DATA && partition.version === NvsVersion.V1) {
-      errors.push(`"${entry.key}" has V2-only type BLOB_DATA in a V1 (IDF < v4.0) partition`);
+      errors.push({ message: `"${entry.key}" has V2-only type BLOB_DATA in a V1 partition`, entryId: eid });
     }
     if (entry.type === NvsType.BLOB && partition.version === NvsVersion.V2) {
-      errors.push(`"${entry.key}" has V1-only type BLOB in a V2 (IDF ≥ v4.0) partition`);
+      errors.push({ message: `"${entry.key}" has V1-only type BLOB in a V2 partition`, entryId: eid });
     }
   }
 
   // Check for duplicate (namespace, key) pairs
-  const seen = new Set<string>();
+  const seen = new Map<string, string>(); // composite key → first entry ID
+  const alreadyFlagged = new Set<string>(); // first-entry IDs already given one error
   for (const entry of partition.entries) {
     const k = `${entry.namespace}::${entry.key}`;
     if (seen.has(k)) {
-      errors.push(`Duplicate key: ${entry.namespace}/${entry.key}`);
+      errors.push({ message: `Duplicate key: ${entry.namespace}/${entry.key}`, entryId: entry.id });
+      const firstId = seen.get(k)!;
+      if (!alreadyFlagged.has(firstId)) {
+        errors.push({ message: `Duplicate key: ${entry.namespace}/${entry.key}`, entryId: firstId });
+        alreadyFlagged.add(firstId);
+      }
+    } else {
+      seen.set(k, entry.id);
     }
-    seen.add(k);
   }
 
   return errors;

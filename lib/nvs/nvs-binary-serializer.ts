@@ -74,9 +74,13 @@ export function serializeBinary(partition: NvsPartition, targetSize: number): Ui
 
   // ── Step 1: Assign namespace indices ──
 
+  // Derive used namespaces from entries (ignores orphaned namespaces)
+  const usedNs = new Set(partition.entries.map(e => e.namespace));
+  const namespaces = partition.namespaces.filter(ns => usedNs.has(ns));
+
   const nsToIndex = new Map<string, number>();
   let nextNsIdx = 1;
-  for (const ns of partition.namespaces) {
+  for (const ns of namespaces) {
     nsToIndex.set(ns, nextNsIdx++);
   }
 

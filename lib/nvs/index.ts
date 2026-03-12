@@ -7,7 +7,7 @@ export type {
   NvsEncoding,
 } from './types';
 
-export type { NormalizeResult } from './nvs-partition';
+export type { NormalizeResult, ValidationError } from './nvs-partition';
 
 export {
   NvsType,
