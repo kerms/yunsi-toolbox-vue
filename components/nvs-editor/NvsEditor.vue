@@ -12,7 +12,7 @@ import {
   validatePartition, generateEntryId, normalizePartition, reconcileBlobTypes,
   checkBlobCompatibility,
   parseBinary, serializeBinary, parseCsv, serializeCsv,
-  MAX_KEY_LENGTH,
+  MAX_KEY_LENGTH, PAGE_SIZE,
 } from '../../lib/nvs';
 
 const props = defineProps<{
@@ -44,12 +44,8 @@ const sortProp = ref<'namespace' | 'key' | 'value' | null>(null);
 const sortOrder = ref<'ascending' | 'descending' | null>(null);
 
 // File input refs
-const openBinInput = ref<HTMLInputElement>();
-const mergeBinInput = ref<HTMLInputElement>();
-const openCsvInput = ref<HTMLInputElement>();
-const mergeCsvInput = ref<HTMLInputElement>();
-const openJsonInput = ref<HTMLInputElement>();
-const mergeJsonInput = ref<HTMLInputElement>();
+const openInput = ref<HTMLInputElement>();
+const mergeInput = ref<HTMLInputElement>();
 const blobUploadInput = ref<HTMLInputElement>();
 const blobUploadEntryId = ref('');
 
@@ -525,19 +521,92 @@ function handleSortChange({ prop, order }: { prop: string; order: 'ascending' | 
 
 // ── Actions: File I/O ──────────────────────────────────────────────
 
-async function onOpenBinChange(e: Event) {
+async function detectFileType(file: File): Promise<'bin' | 'csv' | 'json'> {
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  if (ext === 'bin') return 'bin';
+  if (ext === 'csv') return 'csv';
+  if (ext === 'json') return 'json';
+  // Fallback: size multiple of page size → binary; first byte '{' → json; else csv
+  if (file.size > 0 && file.size % PAGE_SIZE === 0) return 'bin';
+  const firstByte = new Uint8Array(await file.slice(0, 1).arrayBuffer())[0];
+  return firstByte === 0x7b ? 'json' : 'csv';
+}
+
+async function handleImport(file: File, mode: 'open' | 'merge') {
+  const type = await detectFileType(file);
+  try {
+    if (type === 'bin') {
+      const buffer = await file.arrayBuffer();
+      const data = new Uint8Array(buffer);
+      const incoming = parseBinary(data);
+      if (mode === 'open') {
+        partition.value = incoming;
+        targetSize.value = data.byteLength;
+        showStatus(`已加载 ${file.name} (${data.byteLength} 字节)`, 'success');
+      } else {
+        partition.value = mergePartitions(partition.value, incoming, mergeMode.value);
+        showStatus(`已合并 ${file.name} (${incoming.entries.length} 条记录)`, 'success');
+        const blobWarnings = checkBlobCompatibility(partition.value.entries, partition.value.version);
+        if (blobWarnings.length > 0) showStatus(`${blobWarnings.length} 个 blob 超出大小限制，请查看验证面板`, 'info');
+      }
+    } else if (type === 'csv') {
+      const text = await file.text();
+      const incoming = parseCsv(text);
+      if (mode === 'open') {
+        partition.value = incoming;
+        showStatus(`已加载 ${file.name}`, 'success');
+      } else {
+        partition.value = mergePartitions(partition.value, incoming, mergeMode.value);
+        showStatus(`已合并 ${file.name} (${incoming.entries.length} 条记录)`, 'success');
+        const blobWarnings = checkBlobCompatibility(partition.value.entries, partition.value.version);
+        if (blobWarnings.length > 0) showStatus(`${blobWarnings.length} 个 blob 超出大小限制，请查看验证面板`, 'info');
+      }
+    } else {
+      const text = await file.text();
+      const raw = partitionFromJson(text);
+      const { partition: incoming, dropped, clamped } = normalizePartition(raw);
+      if (mode === 'open') {
+        partition.value = incoming;
+        const parts: string[] = [`已加载 ${file.name}`];
+        if (dropped > 0 || clamped > 0) {
+          const details: string[] = [];
+          if (dropped > 0) details.push(`丢弃 ${dropped} 条无效记录`);
+          if (clamped > 0) details.push(`${clamped} 条值被截断`);
+          parts.push(`（${incoming.entries.length} 条，${details.join('，')}）`);
+        }
+        showStatus(parts.join(''), (dropped > 0 || clamped > 0) ? 'info' : 'success');
+      } else {
+        partition.value = mergePartitions(partition.value, incoming, mergeMode.value);
+        const parts: string[] = [`已合并 ${file.name}（${incoming.entries.length} 条记录`];
+        if (dropped > 0 || clamped > 0) {
+          const details: string[] = [];
+          if (dropped > 0) details.push(`丢弃 ${dropped} 条无效记录`);
+          if (clamped > 0) details.push(`${clamped} 条值被截断`);
+          parts.push(`，${details.join('，')}`);
+        }
+        parts.push('）');
+        showStatus(parts.join(''), (dropped > 0 || clamped > 0) ? 'info' : 'success');
+        const blobWarnings = checkBlobCompatibility(partition.value.entries, partition.value.version);
+        if (blobWarnings.length > 0) showStatus(`${blobWarnings.length} 个 blob 超出大小限制，请查看验证面板`, 'info');
+      }
+    }
+  } catch (e: any) {
+    showStatus(`${mode === 'open' ? '加载' : '合并'}失败: ${e.message}`, 'error');
+  }
+}
+
+async function onOpenChange(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0];
   (e.target as HTMLInputElement).value = '';
   if (!file) return;
-  try {
-    const buffer = await file.arrayBuffer();
-    const data = new Uint8Array(buffer);
-    partition.value = parseBinary(data);
-    targetSize.value = data.byteLength;
-    showStatus(`已加载 ${file.name} (${data.byteLength} 字节)`, 'success');
-  } catch (e: any) {
-    showStatus(`加载失败: ${e.message}`, 'error');
-  }
+  await handleImport(file, 'open');
+}
+
+async function onMergeChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  (e.target as HTMLInputElement).value = '';
+  if (!file) return;
+  await handleImport(file, 'merge');
 }
 
 function handleExportBinary() {
@@ -552,37 +621,6 @@ function handleExportBinary() {
   }
 }
 
-async function onMergeBinChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  (e.target as HTMLInputElement).value = '';
-  if (!file) return;
-  try {
-    const buffer = await file.arrayBuffer();
-    const incoming = parseBinary(new Uint8Array(buffer));
-    partition.value = mergePartitions(partition.value, incoming, mergeMode.value);
-    showStatus(`已合并 ${file.name} (${incoming.entries.length} 条记录)`, 'success');
-    const blobWarnings = checkBlobCompatibility(partition.value.entries, partition.value.version);
-    if (blobWarnings.length > 0) {
-      showStatus(`${blobWarnings.length} 个 blob 超出大小限制，请查看验证面板`, 'info');
-    }
-  } catch (e: any) {
-    showStatus(`合并失败: ${e.message}`, 'error');
-  }
-}
-
-async function onOpenCsvChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  (e.target as HTMLInputElement).value = '';
-  if (!file) return;
-  try {
-    const text = await file.text();
-    partition.value = parseCsv(text);
-    showStatus(`已加载 ${file.name}`, 'success');
-  } catch (e: any) {
-    showStatus(`加载失败: ${e.message}`, 'error');
-  }
-}
-
 function handleExportCsv() {
   try {
     const text = serializeCsv(partition.value);
@@ -590,46 +628,6 @@ function handleExportCsv() {
     showStatus('已导出 nvs.csv', 'success');
   } catch (e: any) {
     showStatus(`导出失败: ${e.message}`, 'error');
-  }
-}
-
-async function onMergeCsvChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  (e.target as HTMLInputElement).value = '';
-  if (!file) return;
-  try {
-    const text = await file.text();
-    const incoming = parseCsv(text);
-    partition.value = mergePartitions(partition.value, incoming, mergeMode.value);
-    showStatus(`已合并 ${file.name} (${incoming.entries.length} 条记录)`, 'success');
-    const blobWarnings = checkBlobCompatibility(partition.value.entries, partition.value.version);
-    if (blobWarnings.length > 0) {
-      showStatus(`${blobWarnings.length} 个 blob 超出大小限制，请查看验证面板`, 'info');
-    }
-  } catch (e: any) {
-    showStatus(`合并失败: ${e.message}`, 'error');
-  }
-}
-
-async function onOpenJsonChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  (e.target as HTMLInputElement).value = '';
-  if (!file) return;
-  try {
-    const text = await file.text();
-    const raw = partitionFromJson(text);
-    const { partition: incoming, dropped, clamped } = normalizePartition(raw);
-    partition.value = incoming;
-    const parts: string[] = [`已加载 ${file.name}`];
-    if (dropped > 0 || clamped > 0) {
-      const details: string[] = [];
-      if (dropped > 0) details.push(`丢弃 ${dropped} 条无效记录`);
-      if (clamped > 0) details.push(`${clamped} 条值被截断`);
-      parts.push(`（${incoming.entries.length} 条，${details.join('，')}）`);
-    }
-    showStatus(parts.join(''), (dropped > 0 || clamped > 0) ? 'info' : 'success');
-  } catch (e: any) {
-    showStatus(`加载失败: ${e.message}`, 'error');
   }
 }
 
@@ -642,34 +640,6 @@ function handleExportJson() {
     showStatus(`导出失败: ${e.message}`, 'error');
   }
 }
-
-async function onMergeJsonChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  (e.target as HTMLInputElement).value = '';
-  if (!file) return;
-  try {
-    const text = await file.text();
-    const raw = partitionFromJson(text);
-    const { partition: incoming, dropped, clamped } = normalizePartition(raw);
-    partition.value = mergePartitions(partition.value, incoming, mergeMode.value);
-    const parts: string[] = [`已合并 ${file.name}（${incoming.entries.length} 条记录`];
-    if (dropped > 0 || clamped > 0) {
-      const details: string[] = [];
-      if (dropped > 0) details.push(`丢弃 ${dropped} 条无效记录`);
-      if (clamped > 0) details.push(`${clamped} 条值被截断`);
-      parts.push(`，${details.join('，')}`);
-    }
-    parts.push('）');
-    showStatus(parts.join(''), (dropped > 0 || clamped > 0) ? 'info' : 'success');
-    const blobWarnings = checkBlobCompatibility(partition.value.entries, partition.value.version);
-    if (blobWarnings.length > 0) {
-      showStatus(`${blobWarnings.length} 个 blob 超出大小限制，请查看验证面板`, 'info');
-    }
-  } catch (e: any) {
-    showStatus(`合并失败: ${e.message}`, 'error');
-  }
-}
-
 
 async function onBlobUploadChange(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0];
@@ -713,12 +683,8 @@ function copyToClipboard(text: string) {
 <template>
   <div class="nvs-editor-container">
     <!-- Hidden file inputs -->
-    <input ref="openBinInput" type="file" accept=".bin" style="display:none" @change="onOpenBinChange" />
-    <input ref="mergeBinInput" type="file" accept=".bin" style="display:none" @change="onMergeBinChange" />
-    <input ref="openCsvInput" type="file" accept=".csv" style="display:none" @change="onOpenCsvChange" />
-    <input ref="mergeCsvInput" type="file" accept=".csv" style="display:none" @change="onMergeCsvChange" />
-    <input ref="openJsonInput" type="file" accept=".json" style="display:none" @change="onOpenJsonChange" />
-    <input ref="mergeJsonInput" type="file" accept=".json" style="display:none" @change="onMergeJsonChange" />
+    <input ref="openInput"  type="file" accept=".bin,.csv,.json" style="display:none" @change="onOpenChange" />
+    <input ref="mergeInput" type="file" accept=".bin,.csv,.json" style="display:none" @change="onMergeChange" />
     <input ref="blobUploadInput" type="file" accept="*/*" style="display:none" @change="onBlobUploadChange" />
 
     <el-alert
@@ -814,8 +780,10 @@ function copyToClipboard(text: string) {
         <el-divider direction="vertical" />
         
         <!-- Import / Export -->
+        <el-button type="primary" plain :icon="FolderOpened" @click="openInput?.click()">打开(覆盖)</el-button>
+
         <el-dropdown trigger="click">
-          <el-button type="primary" plain :icon="FolderOpened">
+          <el-button type="primary" plain :icon="Upload">
             导入 <el-icon class="el-icon--right"><arrow-down /></el-icon>
           </el-button>
           <template #dropdown>
@@ -827,12 +795,7 @@ function copyToClipboard(text: string) {
                   <el-radio value="skip">跳过同名</el-radio>
                 </el-radio-group>
               </div>
-              <el-dropdown-item @click="openBinInput?.click()">打开 BIN (.bin)</el-dropdown-item>
-              <el-dropdown-item @click="mergeBinInput?.click()">合并 BIN (.bin)</el-dropdown-item>
-              <el-dropdown-item @click="openCsvInput?.click()" divided>打开 CSV (.csv)</el-dropdown-item>
-              <el-dropdown-item @click="mergeCsvInput?.click()">合并 CSV (.csv)</el-dropdown-item>
-              <el-dropdown-item @click="openJsonInput?.click()" divided>打开 JSON (.json)</el-dropdown-item>
-              <el-dropdown-item @click="mergeJsonInput?.click()">合并 JSON (.json)</el-dropdown-item>
+              <el-dropdown-item @click="mergeInput?.click()">选择文件合并</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
