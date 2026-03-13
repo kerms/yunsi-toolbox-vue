@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { Delete, Plus, FolderOpened, Download, ArrowDown, Top, Bottom } from '@element-plus/icons-vue';
 import {
   type PartitionTable, type PartitionEntry,
   PartitionType, PartitionFlags,
@@ -21,6 +22,8 @@ const props = defineProps<{
 // ── Core state ─────────────────────────────────────────────────────
 
 const table = ref<PartitionTable>({ entries: [], md5Valid: false });
+
+const openInput = ref<HTMLInputElement>();
 
 // Add dialog
 const showAddDialog = ref(false);
@@ -197,7 +200,44 @@ function handleClear() {
 
 // ── File I/O ───────────────────────────────────────────────────────
 
-async function handleOpenBinary(file: File): Promise<false> {
+async function detectFileType(file: File): Promise<'bin' | 'csv' | null> {
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  if (ext === 'bin') return 'bin';
+  if (ext === 'csv') return 'csv';
+  // Fallback: magic byte for partition table binary is 0xAA 0x50.
+  if (file.size >= 2) {
+    const header = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+    if (header[0] === 0xAA && header[1] === 0x50) return 'bin';
+  }
+  // Ambiguous: ask user
+  try {
+    await ElMessageBox.confirm(
+      `无法确定 "${file.name}" 的格式。请选择打开方式：`,
+      '选择格式',
+      { confirmButtonText: '二进制 (BIN)', cancelButtonText: 'CSV 文本', distinguishCancelAndClose: true },
+    );
+    return 'bin';
+  } catch (action) {
+    if (action === 'cancel') return 'csv';
+    return null; // dialog dismissed (Esc / X) → abort
+  }
+}
+
+async function onOpenChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  (e.target as HTMLInputElement).value = '';
+  if (!file) return;
+
+  const type = await detectFileType(file);
+  if (!type) return; // user dismissed
+  if (type === 'bin') {
+    await handleOpenBinary(file);
+  } else {
+    await handleOpenCsv(file);
+  }
+}
+
+async function handleOpenBinary(file: File) {
   try {
     const buffer = await file.arrayBuffer();
     table.value = parseBinary(new Uint8Array(buffer));
@@ -210,7 +250,6 @@ async function handleOpenBinary(file: File): Promise<false> {
   } catch (e: any) {
     showStatus(`加载失败: ${e.message}`, 'error');
   }
-  return false;
 }
 
 function handleExportBinary() {
@@ -229,7 +268,7 @@ function handleExportBinary() {
   }
 }
 
-async function handleOpenCsv(file: File): Promise<false> {
+async function handleOpenCsv(file: File) {
   try {
     const text = await file.text();
     const warnings: string[] = [];
@@ -243,7 +282,6 @@ async function handleOpenCsv(file: File): Promise<false> {
   } catch (e: any) {
     showStatus(`加载失败: ${e.message}`, 'error');
   }
-  return false;
 }
 
 function handleExportCsv() {
@@ -258,41 +296,65 @@ function handleExportCsv() {
 </script>
 
 <template>
-  <div>
+  <div class="partition-table-editor-container">
+    <!-- Hidden file input -->
+    <input ref="openInput" type="file" accept=".bin,.csv" style="display:none" @change="onOpenChange" />
 
-    <!-- ── Toolbar ── -->
-    <div class="flex flex-wrap items-center gap-2 mb-3">
-      <el-button type="primary" @click="showAddDialog = true">添加分区</el-button>
-      <el-button type="danger" plain @click="handleClear">清空</el-button>
-      <el-divider direction="vertical" />
-      <el-text size="small">{{ table.entries.length }} 个分区</el-text>
+    <!-- ── Main Action Toolbar ── -->
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <div class="flex items-center gap-3">
+        <el-button type="danger" plain :icon="Delete" @click="handleClear">清空数据</el-button>
+        <el-button type="primary" plain :icon="Plus" @click="showAddDialog = true">添加分区</el-button>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-3">
+        <!-- Import / Export -->
+        <el-button type="primary" plain :icon="FolderOpened" @click="openInput?.click()">打开(覆盖)</el-button>
+
+        <el-dropdown trigger="click">
+          <el-button type="primary" :icon="Download">
+            导出 <el-icon class="el-icon--right"><arrow-down /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item @click="handleExportBinary">导出为 BIN</el-dropdown-item>
+              <el-dropdown-item @click="handleExportCsv">导出为 CSV</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
     </div>
 
-    <!-- ── Data table ── -->
-    <el-table
+    <!-- ── Data Table Card ── -->
+    <el-card shadow="never" class="nvs-table-card" :body-style="{ padding: '0px' }">
+      <div class="flex items-center justify-between px-4 py-3 bg-gray-50 border-b nvs-card-header">
+        <span class="text-[14px] font-semibold text-gray-700">分区列表 <span class="font-normal text-gray-500 ml-1">({{ table.entries.length }} 条)</span></span>
+      </div>
+
+      <el-table
       :data="table.entries"
-      border
       stripe
-      size="small"
+      size="default"
       empty-text="暂无分区，请添加或导入"
-      max-height="500"
+      max-height="600"
+      class="w-full"
     >
       <el-table-column label="名称" width="160">
         <template #default="{ row, $index }">
           <el-input
             :model-value="row.name"
-            size="small"
+            class="nvs-seamless-input"
             :maxlength="15"
             @change="(val: string) => handleUpdateName($index, val)"
           />
         </template>
       </el-table-column>
 
-      <el-table-column label="类型" width="110">
+      <el-table-column label="类型" width="120">
         <template #default="{ row, $index }">
           <el-select
             :model-value="row.type"
-            size="small"
+            class="nvs-seamless-select"
             @change="(val: PartitionType) => handleUpdateType($index, val)"
           >
             <el-option label="app" :value="PartitionType.APP" />
@@ -301,11 +363,11 @@ function handleExportCsv() {
         </template>
       </el-table-column>
 
-      <el-table-column label="子类型" width="140">
+      <el-table-column label="子类型" width="150">
         <template #default="{ row, $index }">
           <el-select
             :model-value="row.subtype"
-            size="small"
+            class="nvs-seamless-select"
             @change="(val: number) => handleUpdateSubtype($index, val)"
           >
             <el-option
@@ -318,31 +380,31 @@ function handleExportCsv() {
         </template>
       </el-table-column>
 
-      <el-table-column label="偏移量" width="140">
+      <el-table-column label="偏移量" width="160">
         <template #default="{ row, $index }">
           <el-input
             :model-value="formatHex(row.offset)"
-            size="small"
+            class="nvs-seamless-input"
             @change="(val: string) => handleUpdateOffset($index, val)"
           />
         </template>
       </el-table-column>
 
-      <el-table-column label="大小" width="140">
+      <el-table-column label="大小" width="180">
         <template #default="{ row, $index }">
           <el-input
             :model-value="formatHex(row.size)"
-            size="small"
+            class="nvs-seamless-input text-mono"
             @change="(val: string) => handleUpdateSize($index, val)"
           >
-            <template #append>
-              <span class="text-xs">{{ formatSize(row.size) }}</span>
+            <template #suffix>
+              <span class="text-xs text-gray-500 mr-1">{{ formatSize(row.size) }}</span>
             </template>
           </el-input>
         </template>
       </el-table-column>
 
-      <el-table-column label="加密" width="70" align="center">
+      <el-table-column label="加密" width="80" align="center">
         <template #default="{ row, $index }">
           <el-checkbox
             :model-value="(row.flags & 0x01) !== 0"
@@ -351,42 +413,21 @@ function handleExportCsv() {
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column label="操作" width="120" fixed="right">
         <template #default="{ $index }">
-          <el-button size="small" text @click="handleMoveUp($index)" :disabled="$index === 0">上</el-button>
-          <el-button size="small" text @click="handleMoveDown($index)" :disabled="$index === table.entries.length - 1">下</el-button>
-          <el-popconfirm title="确定删除?" @confirm="handleDeleteEntry($index)">
-            <template #reference>
-              <el-button size="small" text type="danger">删除</el-button>
-            </template>
-          </el-popconfirm>
+          <div class="flex items-center">
+            <el-button type="primary" link size="small" :icon="Top" @click="handleMoveUp($index)" :disabled="$index === 0" title="上移" />
+            <el-button type="primary" link size="small" :icon="Bottom" @click="handleMoveDown($index)" :disabled="$index === table.entries.length - 1" title="下移" />
+            <el-popconfirm title="确定删除?" @confirm="handleDeleteEntry($index)">
+              <template #reference>
+                <el-button type="danger" link size="small" :icon="Delete" title="删除" />
+              </template>
+            </el-popconfirm>
+          </div>
         </template>
       </el-table-column>
     </el-table>
-
-    <!-- ── Import/Export section ── -->
-    <el-divider />
-    <div class="flex flex-wrap gap-4">
-      <div>
-        <el-text tag="b" class="block mb-2">二进制文件 (.bin)</el-text>
-        <div class="flex flex-wrap gap-2">
-          <el-upload :before-upload="handleOpenBinary" :show-file-list="false" accept=".bin">
-            <el-button>打开</el-button>
-          </el-upload>
-          <el-button type="primary" @click="handleExportBinary">导出</el-button>
-        </div>
-      </div>
-
-      <div>
-        <el-text tag="b" class="block mb-2">CSV文件 (.csv)</el-text>
-        <div class="flex flex-wrap gap-2">
-          <el-upload :before-upload="handleOpenCsv" :show-file-list="false" accept=".csv">
-            <el-button>打开</el-button>
-          </el-upload>
-          <el-button type="primary" @click="handleExportCsv">导出</el-button>
-        </div>
-      </div>
-    </div>
+    </el-card>
 
     <!-- ── Add partition dialog ── -->
     <el-dialog v-model="showAddDialog" title="添加分区" width="450px">
@@ -440,3 +481,53 @@ function handleExportCsv() {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.nvs-table-card {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--vp-c-divider);
+}
+
+.nvs-card-header {
+  background-color: var(--vp-c-bg-soft);
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+/* Seamless Inputs for Table */
+.nvs-seamless-input :deep(.el-input__wrapper),
+.nvs-seamless-select :deep(.el-input__wrapper) {
+  box-shadow: none !important;
+  background-color: transparent;
+  padding: 0 8px;
+}
+
+.nvs-seamless-input :deep(.el-input__wrapper:hover),
+.nvs-seamless-select :deep(.el-input__wrapper:hover),
+.nvs-seamless-input :deep(.el-input__wrapper.is-focus),
+.nvs-seamless-select :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset !important;
+  background-color: var(--vp-c-bg);
+  border-radius: 4px;
+}
+
+/* Dark mode overrides and utility classes mapping */
+.bg-gray-50 {
+  background-color: var(--vp-c-bg-soft);
+}
+.border-b {
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+.text-gray-500 {
+  color: var(--vp-c-text-2);
+}
+.text-gray-700 {
+  color: var(--vp-c-text-1);
+}
+.border-gray-100 {
+  border-color: var(--vp-c-divider);
+}
+.text-mono :deep(.el-input__inner) {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+}
+</style>
