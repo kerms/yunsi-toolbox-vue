@@ -464,3 +464,42 @@ export function checkBlobCompatibility(
   }
   return warnings;
 }
+
+/**
+ * Parse a hex byte string. Accepts:
+ *   - "de ad be ef"  (space-separated)
+ *   - "deadbeef"     (continuous)
+ *   - "0xDE 0xAD"    (0x-prefixed, comma/space separated)
+ * Rejects input containing non-hex content (letters from identifiers, brackets, etc.).
+ */
+export function parseHexString(text: string): { bytes: Uint8Array } | { error: string } {
+  const trimmed = text.trim();
+  if (!trimmed) return { bytes: new Uint8Array(0) };
+
+  // 0x-prefixed mode: each whitespace/comma-separated token is one byte (0x0–0xFF)
+  if (/0[xX]/.test(trimmed)) {
+    const tokens = trimmed.split(/[\s,]+/).filter(t => t.length > 0);
+    const bytes: number[] = [];
+    for (const token of tokens) {
+      if (!/^0[xX][0-9a-fA-F]{1,2}$/.test(token)) {
+        return { error: `无效的字节: "${token}"（0x格式每个字节为 0x0–0xFF）` };
+      }
+      bytes.push(parseInt(token.slice(2), 16));
+    }
+    return { bytes: new Uint8Array(bytes) };
+  }
+
+  // Raw hex mode: strip separators, parse as 2-char pairs
+  const cleaned = trimmed.replace(/[\s,]+/g, '');
+  if (!/^[0-9a-fA-F]+$/.test(cleaned)) {
+    return { error: '包含非十六进制字符' };
+  }
+  if (cleaned.length % 2 !== 0) {
+    return { error: '字节数不完整（剩余半字节）' };
+  }
+  const bytes = new Uint8Array(cleaned.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(cleaned.substring(i * 2, i * 2 + 2), 16);
+  }
+  return { bytes };
+}

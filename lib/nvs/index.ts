@@ -58,4 +58,5 @@ export {
   normalizePartition,
   reconcileBlobTypes,
   checkBlobCompatibility,
+  parseHexString,
 } from './nvs-partition';
