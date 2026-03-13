@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, reactive } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Upload, View, CopyDocument, Delete, Plus, Search, ArrowDown, FolderOpened, Download, Document, MoreFilled } from '@element-plus/icons-vue';
+import BlobEditorDialog from './BlobEditorDialog.vue';
 import {
   type NvsPartition, type NvsEntry, type NvsEncoding, type NvsFlashStats, type ValidationError,
   NvsType, NvsVersion,
@@ -10,7 +11,7 @@ import {
   createEmptyPartition, addEntry, removeEntry, updateEntry,
   duplicateEntry, mergePartitions, calculateFlashStats,
   validatePartition, generateEntryId, normalizePartition, reconcileBlobTypes,
-  checkBlobCompatibility,
+  checkBlobCompatibility, parseHexString,
   parseBinary, serializeBinary, parseCsv, serializeCsv,
   MAX_KEY_LENGTH, PAGE_SIZE,
 } from '../../lib/nvs';
@@ -31,6 +32,7 @@ const searchQuery = ref('');
 const mergeMode = ref<'overwrite' | 'skip'>('overwrite');
 const showHex = ref(false);
 const isSmallScreen = ref(false);
+const mobileTab = ref<'add' | 'search'>('add');
 
 // Inline new row state
 const newRow = ref({ namespace: '', key: '', encoding: 'u8' as NvsEncoding, value: '' });
@@ -46,8 +48,14 @@ const sortOrder = ref<'ascending' | 'descending' | null>(null);
 // File input refs
 const openInput = ref<HTMLInputElement>();
 const mergeInput = ref<HTMLInputElement>();
-const blobUploadInput = ref<HTMLInputElement>();
-const blobUploadEntryId = ref('');
+const newRowBlobInput = ref<HTMLInputElement>();
+const newRowStringInput = ref<HTMLInputElement>();
+
+// Blob editor dialog state
+const blobEditorVisible = ref(false);
+const blobEditorData    = ref(new Uint8Array(0));
+const blobEditorEntryId = ref('');  // '' = new-row mode
+const blobEditorKey     = ref('');
 
 /** Transient editing buffers for inline table editing.
  *  Key: "entryId:field" → raw string value. */
@@ -133,7 +141,7 @@ const _blobHexCache = new WeakMap<Uint8Array, string>();
 function valueToString(entry: NvsEntry): string {
   if (entry.value instanceof Uint8Array) {
     let hex = _blobHexCache.get(entry.value);
-    if (!hex) { hex = blobToHex(entry.value); _blobHexCache.set(entry.value, hex); }
+    if (!hex) { hex = Array.from(entry.value).map(b => b.toString(16).padStart(2, '0')).join(' '); _blobHexCache.set(entry.value, hex); }
     return hex;
   }
   return String(entry.value);
@@ -300,11 +308,6 @@ function parseEscapes(s: string): string {
   });
 }
 
-/** Full hex string of a Uint8Array (for editing buffer) */
-function blobToHex(data: Uint8Array): string {
-  return Array.from(data).map(b => b.toString(16).padStart(2, '0')).join(' ');
-}
-
 /** Preview of blob value for table cell (up to 8 bytes) */
 function formatValue(entry: NvsEntry): string {
   if (entry.value instanceof Uint8Array) {
@@ -367,13 +370,9 @@ function parseValueInput(encoding: NvsEncoding, raw: string): number | bigint | 
       return parseEscapes(raw);
     case 'blob':
     case 'binary': {
-      const hex = raw.replace(/\s/g, '');
-      if (hex.length === 0) return new Uint8Array(0);
-      if (hex.length % 2 !== 0) throw new Error('十六进制字符串长度必须为偶数');
-      if (!/^[0-9a-fA-F]+$/.test(hex)) throw new Error('十六进制字符串包含无效字符');
-      const bytes = new Uint8Array(hex.length / 2);
-      for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
-      return bytes;
+      const result = parseHexString(raw);
+      if ('error' in result) throw new Error(result.error);
+      return result.bytes;
     }
     default:
       return raw;
@@ -410,6 +409,21 @@ function handleInlineAddEntry() {
   });
   newRow.value.key = autoIncrementKey(newRow.value.key);
   showStatus('已添加', 'success');
+}
+
+async function onNewRowStringChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  (e.target as HTMLInputElement).value = '';
+  if (!file) return;
+  newRow.value.value = formatEscapes(await file.text());
+}
+
+async function onNewRowBlobChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  (e.target as HTMLInputElement).value = '';
+  if (!file) return;
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  newRow.value.value = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function handleDeleteEntry(entryId: string) {
@@ -523,7 +537,7 @@ function handleSortChange({ prop, order }: { prop: string; order: 'ascending' | 
 
 async function detectFileType(file: File): Promise<'bin' | 'csv' | 'json'> {
   const ext = file.name.split('.').pop()?.toLowerCase();
-  if (ext === 'bin') return 'bin';
+  if (ext === 'bin' || ext === 'nvs' || ext === 'part' || ext === 'img') return 'bin';
   if (ext === 'csv') return 'csv';
   if (ext === 'json') return 'json';
   // Fallback: size multiple of page size → binary; first byte '{' → json; else csv
@@ -641,34 +655,74 @@ function handleExportJson() {
   }
 }
 
-async function onBlobUploadChange(e: Event) {
+function isBlobEntry(row: NvsEntry): boolean {
+  return row.value instanceof Uint8Array;
+}
+
+function isUploadableEntry(_row: NvsEntry): boolean {
+  return true;
+}
+
+const fileUploadInput = ref<HTMLInputElement>();
+let fileUploadEntryId = '';
+
+function triggerUpload(row: NvsEntry) {
+  if (row.value instanceof Uint8Array) {
+    openBlobEditor(row.id);
+  } else {
+    fileUploadEntryId = row.id;
+    fileUploadInput.value?.click();
+  }
+}
+
+async function onFileUpload(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0];
   (e.target as HTMLInputElement).value = '';
-  if (!file || !blobUploadEntryId.value) return;
-  try {
-    const entry = partition.value.entries.find(en => en.id === blobUploadEntryId.value);
-    if (!entry) {
-      showStatus('记录不存在', 'error');
-      return;
+  if (!file) return;
+  const entry = partition.value.entries.find(e => e.id === fileUploadEntryId);
+  if (!entry) { showStatus('记录不存在', 'error'); return; }
+  const text = await file.text();
+  if (isPrimitiveType(entry.type)) {
+    try {
+      const value = parseValueInput(getEncodingForType(entry.type), text.trim());
+      partition.value = updateEntry(partition.value, fileUploadEntryId, { value });
+      showStatus(`已导入 ${file.name}`, 'success');
+    } catch (err: any) {
+      showStatus(`导入失败: ${err.message}`, 'error');
     }
-    if (isPrimitiveType(entry.type)) {
-      const text = await file.text();
-      const encoding = getEncodingForType(entry.type);
-      const value = parseValueInput(encoding, text);
-      partition.value = updateEntry(partition.value, blobUploadEntryId.value, { value });
-      showStatus(`已上传 ${file.name}`, 'success');
-    } else if (entry.type === NvsType.SZ) {
-      const text = await file.text();
-      partition.value = updateEntry(partition.value, blobUploadEntryId.value, { value: text });
-      showStatus(`已上传 ${file.name} (${text.length} 字符)`, 'success');
-    } else {
-      const buffer = await file.arrayBuffer();
-      const data = new Uint8Array(buffer);
-      partition.value = updateEntry(partition.value, blobUploadEntryId.value, { value: data });
-      showStatus(`已上传 ${file.name} (${data.length} 字节)`, 'success');
-    }
-  } catch (e: any) {
-    showStatus(`上传失败: ${e.message}`, 'error');
+  } else {
+    partition.value = updateEntry(partition.value, fileUploadEntryId, { value: text });
+    showStatus('已导入文本', 'success');
+  }
+}
+
+function openBlobEditor(entryId: string) {
+  const entry = partition.value.entries.find(e => e.id === entryId);
+  if (!entry || !(entry.value instanceof Uint8Array)) return;
+  blobEditorEntryId.value = entryId;
+  blobEditorKey.value     = entry.key;
+  blobEditorData.value    = new Uint8Array(entry.value);
+  blobEditorVisible.value = true;
+}
+
+function openBlobEditorForNewRow() {
+  const result = parseHexString(newRow.value.value);
+  if ('error' in result && newRow.value.value.trim()) {
+    showStatus(`十六进制格式错误: ${result.error}`, 'error');
+    return;
+  }
+  blobEditorEntryId.value = '';
+  blobEditorKey.value     = newRow.value.key || 'blob';
+  blobEditorData.value    = 'bytes' in result ? new Uint8Array(result.bytes) : new Uint8Array(0);
+  blobEditorVisible.value = true;
+}
+
+function onBlobEditorConfirm(data: Uint8Array) {
+  if (blobEditorEntryId.value) {
+    partition.value = updateEntry(partition.value, blobEditorEntryId.value, { value: data });
+    showStatus(`已更新 (${data.length} 字节)`, 'success');
+  } else {
+    newRow.value.value = Array.from(data).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 }
 
@@ -683,9 +737,11 @@ function copyToClipboard(text: string) {
 <template>
   <div class="nvs-editor-container">
     <!-- Hidden file inputs -->
-    <input ref="openInput"  type="file" accept=".bin,.csv,.json" style="display:none" @change="onOpenChange" />
-    <input ref="mergeInput" type="file" accept=".bin,.csv,.json" style="display:none" @change="onMergeChange" />
-    <input ref="blobUploadInput" type="file" accept="*/*" style="display:none" @change="onBlobUploadChange" />
+    <input ref="openInput"  type="file" accept=".bin,.nvs,.part,.img,.csv,.json" style="display:none" @change="onOpenChange" />
+    <input ref="mergeInput" type="file" accept=".bin,.nvs,.part,.img,.csv,.json" style="display:none" @change="onMergeChange" />
+    <input ref="newRowBlobInput" type="file" accept="*/*" style="display:none" @change="onNewRowBlobChange" />
+    <input ref="newRowStringInput" type="file" accept="*/*" style="display:none" @change="onNewRowStringChange" />
+    <input ref="fileUploadInput" type="file" accept="*/*" style="display:none" @change="onFileUpload" />
 
     <el-alert
       v-if="errors.length > 0"
@@ -763,24 +819,26 @@ function copyToClipboard(text: string) {
       </div>
     </el-card>
 
-    <!-- ── Main Action Toolbar ── -->
-    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+    <!-- ── Main Action Toolbar (Desktop) ── -->
+    <div v-if="!isSmallScreen" class="flex flex-wrap items-center justify-between gap-3 mb-4">
       <div class="flex items-center gap-3">
         <el-button type="danger" plain :icon="Delete" @click="handleClear">清空数据</el-button>
         <el-checkbox v-model="showHex" border>HEX 模式</el-checkbox>
       </div>
-      
-      <div class="flex flex-wrap items-center gap-3">
-        <!-- Filter Area -->
-        <el-select v-model="namespaceFilter" placeholder="全部命名空间" clearable style="width: 150px;">
-          <el-option v-for="ns in partition.namespaces" :key="ns" :label="displayStr(ns)" :value="ns" />
-        </el-select>
-        <el-input v-model="searchQuery" placeholder="搜索键名/值..." clearable :prefix-icon="Search" style="width: 180px;" />
-        
-        <el-divider direction="vertical" />
-        
-        <!-- Import / Export -->
-        <el-button type="primary" plain :icon="FolderOpened" @click="openInput?.click()">打开(覆盖)</el-button>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <!-- Filter group — wraps as a unit -->
+        <div class="flex items-center gap-2 flex-nowrap min-w-0">
+          <el-select v-model="namespaceFilter" placeholder="全部命名空间" clearable style="width: 150px;">
+            <el-option v-for="ns in partition.namespaces" :key="ns" :label="displayStr(ns)" :value="ns" />
+          </el-select>
+          <el-input v-model="searchQuery" placeholder="搜索键名/值..." clearable :prefix-icon="Search" style="width: 160px;" />
+        </div>
+
+        <!-- Action group — wraps as a unit -->
+        <div class="flex items-center gap-2 flex-wrap">
+          <el-divider direction="vertical" />
+          <el-button type="primary" plain :icon="FolderOpened" @click="openInput?.click()">打开(覆盖)</el-button>
 
         <el-dropdown trigger="click">
           <el-button type="primary" plain :icon="Upload">
@@ -812,6 +870,59 @@ function copyToClipboard(text: string) {
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        </div><!-- end action group -->
+      </div>
+    </div>
+
+    <!-- ── Mobile Toolbar (<640px) ── -->
+    <div v-else class="mb-3">
+      <!-- Row 1: actions -->
+      <div class="flex flex-wrap items-center gap-2 mb-3">
+        <el-button type="primary" plain size="small" :icon="FolderOpened" @click="openInput?.click()">打开</el-button>
+        <el-dropdown trigger="click">
+          <el-button type="primary" plain size="small" :icon="Upload">
+            导入 <el-icon class="el-icon--right"><arrow-down /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <div class="px-3 py-2 border-b border-gray-100 flex flex-col gap-1 bg-gray-50">
+                <span class="text-xs text-gray-500 font-semibold">合并策略</span>
+                <el-radio-group v-model="mergeMode" size="small">
+                  <el-radio value="overwrite">覆盖同名</el-radio>
+                  <el-radio value="skip">跳过同名</el-radio>
+                </el-radio-group>
+              </div>
+              <el-dropdown-item @click="mergeInput?.click()">选择文件合并</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-dropdown trigger="click">
+          <el-button type="primary" size="small" :icon="Download">
+            导出 <el-icon class="el-icon--right"><arrow-down /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item @click="handleExportBinary">导出为 BIN</el-dropdown-item>
+              <el-dropdown-item @click="handleExportCsv">导出为 CSV</el-dropdown-item>
+              <el-dropdown-item @click="handleExportJson">导出为 JSON</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <span class="flex-1" />
+        <el-button type="danger" plain size="small" :icon="Delete" @click="handleClear">清空</el-button>
+        <el-checkbox v-model="showHex" border size="small">HEX</el-checkbox>
+      </div>
+      <!-- Row 2: tabs -->
+      <el-tabs v-model="mobileTab" type="card" class="nvs-mobile-tabs">
+        <el-tab-pane label="新增" name="add" />
+        <el-tab-pane label="搜索" name="search" />
+      </el-tabs>
+      <!-- Search tab content -->
+      <div v-if="mobileTab === 'search'" class="flex flex-col gap-2 mt-2">
+        <el-select v-model="namespaceFilter" placeholder="全部命名空间" clearable>
+          <el-option v-for="ns in partition.namespaces" :key="ns" :label="displayStr(ns)" :value="ns" />
+        </el-select>
+        <el-input v-model="searchQuery" placeholder="搜索键名/值..." clearable :prefix-icon="Search" />
       </div>
     </div>
 
@@ -822,7 +933,49 @@ function copyToClipboard(text: string) {
       </div>
 
       <!-- Inline Add Row -->
-      <div class="nvs-add-inline grid grid-cols-1 sm:grid-cols-[150px_1fr_120px_1fr_auto] gap-2 px-4 py-3 border-b" style="background: var(--vp-c-bg-soft);">
+      <div v-show="!isSmallScreen || mobileTab === 'add'" class="nvs-add-inline grid grid-cols-1 sm:grid-cols-[1fr_1fr_120px_150px_auto] gap-2 px-4 py-3 border-b" style="background: var(--vp-c-bg-soft);">
+        <el-input
+          v-model="newRow.key"
+          placeholder="新键名 (支持 \xHH)"
+          @keyup.enter="handleInlineAddEntry"
+        />
+        <div
+          v-if="newRow.encoding === 'binary' || newRow.encoding === 'blob'"
+          class="flex items-center gap-1 min-w-0"
+        >
+          <el-input
+            v-model="newRow.value"
+            placeholder="十六进制 (e.g. deadbeef)"
+            @keyup.enter="handleInlineAddEntry"
+            style="flex:1;min-width:0"
+          />
+          <el-button-group>
+            <el-button :icon="Upload" @click="newRowBlobInput?.click()" title="从文件导入" />
+            <el-button :icon="MoreFilled" @click="openBlobEditorForNewRow" title="详细编辑" />
+          </el-button-group>
+        </div>
+        <div
+          v-else-if="newRow.encoding === 'string'"
+          class="flex items-center gap-1 min-w-0"
+        >
+          <el-input
+            v-model="newRow.value"
+            type="textarea"
+            :autosize="{ minRows: 1, maxRows: 3 }"
+            placeholder="值 (支持 \\xHH 转义)"
+            style="flex:1;min-width:0"
+          />
+          <el-button :icon="Upload" @click="newRowStringInput?.click()" title="从文件导入" />
+        </div>
+        <el-input
+          v-else
+          v-model="newRow.value"
+          placeholder="值"
+          @keyup.enter="handleInlineAddEntry"
+        />
+        <el-select v-model="newRow.encoding">
+          <el-option v-for="enc in encodingOptions" :key="enc" :value="enc" :label="enc" />
+        </el-select>
         <el-select
           v-model="newRow.namespace"
           filterable
@@ -832,27 +985,6 @@ function copyToClipboard(text: string) {
         >
           <el-option v-for="ns in partition.namespaces" :key="ns" :value="ns" :label="displayStr(ns)" />
         </el-select>
-        <el-input
-          v-model="newRow.key"
-          placeholder="新键名 (支持 \xHH)"
-          @keyup.enter="handleInlineAddEntry"
-        />
-        <el-select v-model="newRow.encoding">
-          <el-option v-for="enc in encodingOptions" :key="enc" :value="enc" :label="enc" />
-        </el-select>
-        <el-input
-          v-if="newRow.encoding === 'string'"
-          v-model="newRow.value"
-          type="textarea"
-          :autosize="{ minRows: 1, maxRows: 3 }"
-          placeholder="值 (支持 \\xHH 转义)"
-        />
-        <el-input
-          v-else
-          v-model="newRow.value"
-          placeholder="值"
-          @keyup.enter="handleInlineAddEntry"
-        />
         <el-button type="primary" :icon="Plus" @click="handleInlineAddEntry" title="添加记录">添加</el-button>
       </div>
 
@@ -917,17 +1049,10 @@ function copyToClipboard(text: string) {
                 @blur="commitEdit(row.id, 'value')"
               />
               <!-- Blob -->
-              <el-input
-                v-else
-                :model-value="editingCells.get(row.id + ':value') ?? formatValue(row)"
-                class="nvs-seamless-input"
-                placeholder="十六进制 (如: 48 65 6C 6C 6F)"
-                @focus="editingCells.set(row.id + ':value', blobToHex(row.value as Uint8Array))"
-                @input="(val: string) => editingCells.set(row.id + ':value', val)"
-                @keyup.enter="commitEdit(row.id, 'value')"
-                @keyup.escape="cancelEdit(row.id, 'value')"
-                @blur="commitEdit(row.id, 'value')"
-              />
+              <div v-else class="flex items-center gap-1 w-full min-w-0">
+                <span class="text-sm font-mono text-gray-500 flex-1 truncate">{{ formatValue(row) }}</span>
+                <el-button size="small" link :icon="Document" @click="openBlobEditor(row.id)">编辑</el-button>
+              </div>
             </div>
           </template>
         </el-table-column>
@@ -970,7 +1095,7 @@ function copyToClipboard(text: string) {
           <template #default="{ row }">
             <!-- Desktop: compact icon buttons -->
             <div class="nvs-actions-desktop flex items-center">
-              <el-button type="primary" link size="small" :icon="Upload" @click="blobUploadEntryId = row.id; blobUploadInput?.click()" title="上传文件" />
+              <el-button type="primary" link size="small" :icon="Upload" @click="triggerUpload(row)" :title="isBlobEntry(row) ? '编辑二进制' : '从文件导入'" />
               <el-button type="primary" link size="small" :icon="Document" @click="valueDialogEntry = row; showValueDialog = true" title="查看完整值" />
               <el-button type="primary" link size="small" :icon="CopyDocument" @click="handleDuplicateEntry(row.id)" title="复制记录" />
               <el-popconfirm title="确定删除此记录?" @confirm="handleDeleteEntry(row.id)">
@@ -985,7 +1110,7 @@ function copyToClipboard(text: string) {
                 <el-button type="primary" link :icon="MoreFilled" />
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item @click="blobUploadEntryId = row.id; blobUploadInput?.click()">上传文件</el-dropdown-item>
+                    <el-dropdown-item @click="triggerUpload(row)">{{ isBlobEntry(row) ? '编辑二进制' : '从文件导入' }}</el-dropdown-item>
                     <el-dropdown-item @click="valueDialogEntry = row; showValueDialog = true">查看完整值</el-dropdown-item>
                     <el-dropdown-item @click="handleDuplicateEntry(row.id)">复制记录</el-dropdown-item>
                     <el-dropdown-item divided @click="ElMessageBox.confirm('确定删除此记录?', '确认', { type: 'warning' }).then(() => handleDeleteEntry(row.id)).catch(() => {})">删除</el-dropdown-item>
@@ -997,6 +1122,14 @@ function copyToClipboard(text: string) {
         </el-table-column>
       </el-table>
     </el-card>
+
+    <!-- ── Blob editor dialog ── -->
+    <BlobEditorDialog
+      v-model:visible="blobEditorVisible"
+      :model-value="blobEditorData"
+      :entry-key="blobEditorKey"
+      @update:model-value="onBlobEditorConfirm"
+    />
 
     <!-- ── Value viewer dialog ── -->
     <el-dialog
@@ -1131,11 +1264,19 @@ function copyToClipboard(text: string) {
 /* Responsive action buttons */
 .nvs-actions-mobile { display: none; }
 
-@media (max-width: 640px) {
+@media (max-width: 639px) {
   .nvs-add-inline {
     grid-template-columns: 1fr;
   }
   .nvs-actions-desktop { display: none; }
   .nvs-actions-mobile { display: block; }
+}
+
+/* Mobile tabs: remove content padding since tab-pane is empty */
+.nvs-mobile-tabs :deep(.el-tabs__content) {
+  display: none;
+}
+.nvs-mobile-tabs :deep(.el-tabs__header) {
+  margin-bottom: 0;
 }
 </style>
